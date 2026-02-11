@@ -1,0 +1,105 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kubernetes-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: kubernetes
+    interval: 30s
+    rules:
+    # Pod Failure Alerts
+    - alert: PodCrashLooping
+      expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+        component: kubernetes
+      annotations:
+        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is crash looping"
+        
+    - alert: PodNotReady
+      expr: kube_pod_status_phase{phase!="Running",phase!="Succeeded"} == 1
+      for: 10m
+      labels:
+        severity: high
+        component: kubernetes
+      annotations:
+        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is not ready"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been in {{ $labels.phase }} state for more than 10 minutes"
+        
+    - alert: PodFailed
+      expr: kube_pod_status_phase{phase="Failed"} == 1
+      for: 2m
+      labels:
+        severity: critical
+        component: kubernetes
+      annotations:
+        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has failed"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is in Failed state"
+
+    # Node Alerts
+    - alert: NodeNotReady
+      expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        component: kubernetes
+      annotations:
+        summary: "Node {{ $labels.node }} is not ready"
+        description: "Node {{ $labels.node }} has been not ready for more than 5 minutes"
+        
+    - alert: NodeMemoryPressure
+      expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+      for: 5m
+      labels:
+        severity: high
+        component: kubernetes
+      annotations:
+        summary: "Node {{ $labels.node }} has memory pressure"
+        description: "Node {{ $labels.node }} is experiencing memory pressure"
+        
+    - alert: NodeDiskPressure
+      expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+      for: 5m
+      labels:
+        severity: high
+        component: kubernetes
+      annotations:
+        summary: "Node {{ $labels.node }} has disk pressure"
+        description: "Node {{ $labels.node }} is experiencing disk pressure"
+        
+    - alert: NodeCPUPressure
+      expr: kube_node_status_condition{condition="PIDPressure",status="true"} == 1
+      for: 5m
+      labels:
+        severity: warning
+        component: kubernetes
+      annotations:
+        summary: "Node {{ $labels.node }} has PID pressure"
+        description: "Node {{ $labels.node }} is experiencing PID pressure"
+
+    # Resource Usage Alerts
+    - alert: PodHighMemoryUsage
+      expr: (sum(container_memory_working_set_bytes{container!="POD",container!=""}) by (pod, namespace) / sum(container_spec_memory_limit_bytes{container!="POD",container!=""}) by (pod, namespace)) * 100 > 90
+      for: 5m
+      labels:
+        severity: high
+        component: kubernetes
+      annotations:
+        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has high memory usage"
+        description: "Pod {{ $labels.pod }} is using more than 90% of its memory limit"
+        
+    - alert: PodHighCPUUsage
+      expr: (sum(rate(container_cpu_usage_seconds_total{container!="POD",container!=""}[5m])) by (pod, namespace) / sum(container_spec_cpu_quota{container!="POD",container!=""}/container_spec_cpu_period{container!="POD",container!=""}) by (pod, namespace)) * 100 > 90
+      for: 5m
+      labels:
+        severity: high
+        component: kubernetes
+      annotations:
+        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has high CPU usage"
+        description: "Pod {{ $labels.pod }} is using more than 90% of its CPU limit"

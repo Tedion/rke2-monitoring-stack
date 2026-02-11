@@ -1,0 +1,85 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: infrastructure-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: infrastructure
+    interval: 30s
+    rules:
+    # CPU Alerts
+    - alert: HighCPUUsage
+      expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+      for: 5m
+      labels:
+        severity: high
+        component: infrastructure
+      annotations:
+        summary: "High CPU usage on {{ $labels.instance }}"
+        description: "CPU usage is above 85% for more than 5 minutes on {{ $labels.instance }}"
+        
+    - alert: CriticalCPUUsage
+      expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+      for: 2m
+      labels:
+        severity: critical
+        component: infrastructure
+      annotations:
+        summary: "Critical CPU usage on {{ $labels.instance }}"
+        description: "CPU usage is above 95% for more than 2 minutes on {{ $labels.instance }}"
+
+    # Memory Alerts
+    - alert: HighMemoryUsage
+      expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+      for: 5m
+      labels:
+        severity: high
+        component: infrastructure
+      annotations:
+        summary: "High memory usage on {{ $labels.instance }}"
+        description: "Memory usage is above 85% on {{ $labels.instance }}"
+        
+    - alert: CriticalMemoryUsage
+      expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+      for: 2m
+      labels:
+        severity: critical
+        component: infrastructure
+      annotations:
+        summary: "Critical memory usage on {{ $labels.instance }}"
+        description: "Memory usage is above 95% on {{ $labels.instance }}"
+
+    # Disk Alerts
+    - alert: DiskSpaceLow
+      expr: (node_filesystem_avail_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"} / node_filesystem_size_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"}) * 100 < 20
+      for: 5m
+      labels:
+        severity: warning
+        component: infrastructure
+      annotations:
+        summary: "Low disk space on {{ $labels.instance }}"
+        description: "Disk space is below 20% on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}"
+        
+    - alert: DiskSpaceCritical
+      expr: (node_filesystem_avail_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"} / node_filesystem_size_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"}) * 100 < 10
+      for: 2m
+      labels:
+        severity: critical
+        component: infrastructure
+      annotations:
+        summary: "Critical disk space on {{ $labels.instance }}"
+        description: "Disk space is below 10% on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}"
+        
+    - alert: DiskSpaceExhausted
+      expr: (node_filesystem_avail_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"} / node_filesystem_size_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"}) * 100 < 5
+      for: 1m
+      labels:
+        severity: critical
+        component: infrastructure
+      annotations:
+        summary: "Disk space exhausted on {{ $labels.instance }}"
+        description: "Disk space is below 5% on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}"

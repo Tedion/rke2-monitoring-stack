@@ -1,0 +1,47 @@
+# Loki Stack Helm Values
+loki:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 100Gi
+  config:
+    schema_config:
+      configs:
+        - from: 2020-10-24
+          store: tsdb
+          object_store: filesystem
+          schema: v11
+          index:
+            prefix: index_
+            period: 24h
+    storage_config:
+    tsdb:
+      dir: /loki/tsdb
+      tsdb:
+        active_index_directory: /loki/boltdb-shipper-active
+        cache_location: /loki/boltdb-shipper-cache
+        shared_store: filesystem
+      filesystem:
+        directory: /loki/chunks
+    limits_config:
+      retention_period: 2160h  # 90 days  # 30 days
+
+promtail:
+  enabled: true
+  config:
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+    snippets:
+      pipelineStages:
+        - docker: {}
+      extraScrapeConfigs:
+        - job_name: backup-logs
+          static_configs:
+            - targets:
+                - localhost
+              labels:
+                job: backup
+                __path__: /var/log/backups/*.log
+
+grafana:
+  enabled: false  # Already enabled in prometheus stack
