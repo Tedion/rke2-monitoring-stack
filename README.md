@@ -4,11 +4,20 @@ This package contains everything needed to deploy a complete monitoring stack (P
 
 ## Contents
 
-- `prometheus/values.yaml` - Prometheus Stack Helm values
-- `prometheus/alert-rules/` - Prometheus alert rules
-- `loki/values.yaml` - Loki Stack Helm values
-- `scripts/install.sh` - Installation script
+### Core Components
+- `prometheus/values.yaml` - Prometheus Stack Helm values (Prometheus, Grafana, Alertmanager)
+- `prometheus/alert-rules/` - Prometheus alert rules (backup, database, application, infrastructure, kubernetes, etcd, openg2p-services)
+- `loki/values.yaml` - Loki Stack Helm values (log aggregation)
+- `tempo/values.yaml` - Tempo Helm values (distributed tracing)
+- `otel-collector/values.yaml` - OpenTelemetry Collector Helm values
+
+### Scripts & Integration
+- `install.sh` - Main installation script
+- `scripts/install.sh` - Additional installation scripts
 - `scripts/setup-secrets.sh` - Secret setup script
+- `backup-integration/backup-metrics-exporter.sh` - Script to push backup metrics to Pushgateway
+
+### Documentation
 - `docs/DEPLOYMENT.md` - Detailed deployment instructions
 - `docs/MONITORING-SETUP-SNAPSHOT.md` - Current setup snapshot (components, ports, backup alerts)
 - `docs/PRESENTATION-MONITORING-FOR-NON-TECHNICAL.md` - Overview for non-technical staff (alerts, dashboards, what to do)
