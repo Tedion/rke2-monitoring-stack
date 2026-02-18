@@ -10,6 +10,9 @@ This package contains everything needed to deploy a complete monitoring stack (P
 - `scripts/install.sh` - Installation script
 - `scripts/setup-secrets.sh` - Secret setup script
 - `docs/DEPLOYMENT.md` - Detailed deployment instructions
+- `docs/MONITORING-SETUP-SNAPSHOT.md` - Current setup snapshot (components, ports, backup alerts)
+- `docs/PRESENTATION-MONITORING-FOR-NON-TECHNICAL.md` - Overview for non-technical staff (alerts, dashboards, what to do)
+- `docs/PRESENTATION-SLIDES-ONE-PAGER.md` - One-page slide summary for presentations
 
 ## Prerequisites
 

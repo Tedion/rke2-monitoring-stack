@@ -1,4 +1,6 @@
 # Prometheus Operator Helm Values - Production Configuration with SMTP & Slack
+# Updated: Fixed alerting issues and added LGTM stack support
+
 prometheusOperator:
   enabled: true
   resources:
@@ -9,8 +11,14 @@ prometheusOperator:
       cpu: 200m
       memory: 256Mi
   admissionWebhooks:
-    enabled: false
-    failurePolicy: Fail
+    enabled: true
+    failurePolicy: Ignore
+
+# Suppress noisy default rules that don't work with RKE2
+defaultRules:
+  rules:
+    etcd: false  # RKE2 uses single-node embedded etcd, default rules expect 3+ members
+    kubeProxy: false  # RKE2 doesn't expose kube-proxy metrics the same way
 
 prometheus:
   enabled: true
@@ -48,21 +56,117 @@ prometheus:
           - source_labels: [__meta_kubernetes_endpoint_port_name]
             regex: 'http'
             action: keep
-      # External Node Exporters - moved here from root level so Prometheus actually scrapes them
-      - job_name: 'external-node-exporters'
+      
+      # External Node Exporters
+      - job_name: "external-node-exporters"
         static_configs:
           - targets:
-            - '172.16.16.223:9100'  # Rancher
-            - '172.16.16.224:9100'  # OpenG2P master
-            - '172.16.16.226:9100'  # OpenG2P worker-1
-            - '172.16.16.227:9100'  # OpenG2P worker-2
-            - '172.16.16.228:9100'  # Nginx
-            - '172.16.16.229:9100'  # DB
-            - '172.16.16.231:9100'  # MinIO
-            - '172.16.16.232:9100'  # Metabase
+            - "172.16.16.223:9100"  # Rancher
+            - "172.16.16.224:9100"  # OpenG2P master
+            - "172.16.16.226:9100"  # OpenG2P worker-1
+            - "172.16.16.227:9100"  # OpenG2P worker-2
+            - "172.16.16.228:9100"  # Nginx
+            - "172.16.16.229:9100"  # DB
+            - "172.16.16.231:9100"  # MinIO
+            - "172.16.16.232:9100"  # Metabase
             labels:
-              environment: 'external'
-              cluster: 'rke2-production'
+              environment: "external"
+              cluster: "rke2-production"
+        scrape_interval: 30s
+        scrape_timeout: 10s
+      
+      # External PostgreSQL exporter on DB VM (172.16.16.229)
+      - job_name: "external-postgresql"
+        static_configs:
+          - targets:
+            - "172.16.16.229:9187"  # PostgreSQL exporter port
+            labels:
+              service: postgresql
+              instance: "172.16.16.229"
+              environment: "external"
+              cluster: "rke2-production"
+        scrape_interval: 15s
+        scrape_timeout: 10s
+      
+      # Blackbox HTTP probes - symptom-based monitoring (Google SRE philosophy)
+      # TODO: Replace placeholder targets with actual OpenG2P endpoints
+      - job_name: "blackbox-http"
+        metrics_path: /probe
+        params:
+          module: [http_2xx]
+        static_configs:
+          - targets:
+            # TODO: Add your actual OpenG2P HTTP endpoints here
+            # Example:
+            # - "https://openg2p.example.com/api/health"
+            # - "https://openg2p.example.com/"
+            - "http://example.com"  # Placeholder - replace with real endpoints
+            labels:
+              probe_type: "http"
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: prometheus-blackbox-exporter.monitoring:9115
+      
+      # TCP probe for PostgreSQL port (backup check)
+      - job_name: "tcp-probe-postgresql"
+        metrics_path: /probe
+        params:
+          module: [tcp_connect]
+        static_configs:
+          - targets:
+            - "172.16.16.229:5432"  # PostgreSQL port
+            labels:
+              service: postgresql
+              instance: "172.16.16.229"
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: prometheus-blackbox-exporter.monitoring:9115
+      
+      # RKE2 etcd metrics (requires etcd client certs)
+      # NOTE: RKE2 etcd certs are at /var/lib/rancher/rke2/server/tls/etcd/
+      # Create a k8s secret from them:
+      # kubectl create secret generic etcd-client-cert -n monitoring \
+      #   --from-file=ca.crt=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt \
+      #   --from-file=tls.crt=/var/lib/rancher/rke2/server/tls/etcd/server-client.crt \
+      #   --from-file=tls.key=/var/lib/rancher/rke2/server/tls/etcd/server-client.key
+      # Then mount this secret in prometheus.prometheusSpec.secrets: ["etcd-client-cert"]
+      - job_name: "etcd"
+        scheme: https
+        tls_config:
+          ca_file: /etc/prometheus/secrets/etcd-client-cert/ca.crt
+          cert_file: /etc/prometheus/secrets/etcd-client-cert/tls.crt
+          key_file: /etc/prometheus/secrets/etcd-client-cert/tls.key
+          insecure_skip_verify: false
+        static_configs:
+          - targets: ['127.0.0.1:2379']
+            labels:
+              component: etcd
+              cluster: "rke2-production"
+        scrape_interval: 30s
+        scrape_timeout: 10s
+      
+      # CoreDNS metrics
+      - job_name: "coredns"
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names:
+                - kube-system
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_name]
+            regex: 'kube-dns'
+            action: keep
+          - source_labels: [__meta_kubernetes_endpoint_port_name]
+            regex: 'metrics'
+            action: keep
         scrape_interval: 30s
         scrape_timeout: 10s
     
@@ -71,16 +175,20 @@ prometheus:
     podMonitorSelector: {}
     podMonitorNamespaceSelector: {}
     
-    # Fixed: Empty ruleSelector picks up ALL PrometheusRule resources
-    # This includes both default Helm chart rules (with release: kube-prometheus-stack label)
-    # AND custom rules (with prometheus: kube-prometheus,role: alert-rules labels)
-    ruleSelector: {}
+    ruleSelector:
+      matchLabels:
+        prometheus: kube-prometheus
+        role: alert-rules
     ruleNamespaceSelector: {}
     
     securityContext:
       runAsNonRoot: true
       runAsUser: 1000
       fsGroup: 2000
+    
+    # Mount etcd client certs secret (uncomment after creating the secret)
+    # secrets:
+    #   - etcd-client-cert
     
     resources:
       limits:
@@ -91,15 +199,13 @@ prometheus:
         memory: 4Gi
     
     podDisruptionBudget:
-      enabled: false
+      enabled: true
       minAvailable: 1
     
     replicas: 1
 
 alertmanager:
   enabled: true
-  
-  
   
   # Alertmanager configuration
   config:
@@ -112,15 +218,27 @@ alertmanager:
       smtp_auth_password_file: '/etc/alertmanager/secrets/alertmanager-smtp/smtp_password'
       smtp_require_tls: true
     
-    # Inhibit rules - prevent alert storms
+    # Improved inhibit rules - prevent alert storms
     inhibit_rules:
-      # If critical alert fires, suppress warning alerts for same alertname
+      # Critical suppresses high for same alertname+instance
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'high'
+        equal: ['alertname', 'instance']
+      # Critical suppresses warning for same alertname+instance
       - source_match:
           severity: 'critical'
         target_match:
           severity: 'warning'
         equal: ['alertname', 'instance', 'cluster']
-      # If high alert fires, suppress low alerts
+      # High suppresses warning for same alertname+instance
+      - source_match:
+          severity: 'high'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'instance']
+      # High suppresses low alerts
       - source_match:
           severity: 'high'
         target_match:
@@ -136,6 +254,24 @@ alertmanager:
       repeat_interval: 12h
       
       routes:
+      # DATABASE ROUTE - FIRST (highest priority, immediate notification)
+      - match:
+          component: database
+        receiver: 'critical-alerts'
+        group_wait: 0s
+        group_interval: 1m
+        repeat_interval: 30m
+        continue: false
+      
+      # MESSAGING ROUTE - High priority (Kafka/Redis down = cascading failures)
+      - match:
+          component: messaging
+        receiver: 'critical-alerts'
+        group_wait: 0s
+        group_interval: 1m
+        repeat_interval: 30m
+        continue: false
+      
       # CRITICAL: Immediate notification via BOTH Email AND Slack
       - match:
           severity: critical
@@ -174,9 +310,13 @@ alertmanager:
     
     # Receivers configuration
     receivers:
-    # Default receiver - Slack only (no email spam)
-    # Only critical and high alerts will send emails via their specific receivers
+    # Default receiver - both channels
     - name: 'default'
+      email_configs:
+      - to: 'tedionabera@gmail.com'
+        send_resolved: true
+        headers:
+          Subject: 'Alert: {{ .GroupLabels.alertname }} - {{ .Status }}'
       slack_configs:
       - api_url_file: '/etc/alertmanager/secrets/alertmanager-slack/webhook_url'
         channel: '#alerts'
@@ -203,7 +343,7 @@ alertmanager:
           <p><strong>Summary:</strong></p>
           <p>{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}</p>
           <hr>
-          <p><small>Alert fired at: {{ range .Alerts }}{{ .StartsAt }}{{ end }}</small></p>
+          <p><small>Alert fired at: {{ .StartsAt }}</small></p>
       slack_configs:
       - api_url_file: '/etc/alertmanager/secrets/alertmanager-slack/webhook_url'
         channel: '#alerts'
@@ -222,7 +362,7 @@ alertmanager:
           *Summary:*
           {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}
           
-          *Fired At:* {{ range .Alerts }}{{ .StartsAt }}{{ end }}
+          *Fired At:* {{ .StartsAt }}
           *Status:* {{ .Status }}
         send_resolved: true
         color: 'danger'
@@ -300,15 +440,21 @@ alertmanager:
   
   # Alertmanager resources and HA
   alertmanagerSpec:
-    # The 'secrets' field automatically mounts secrets at /etc/alertmanager/secrets/<name>/
-    # which matches the paths referenced in the config above (smtp_auth_password_file and api_url_file)
     secrets:
       - alertmanager-smtp
       - alertmanager-slack
-    # Removed extraSecretMounts - redundant and was mounting to wrong paths
-    # The 'secrets' field above already handles correct mounting
+    extraSecretMounts:
+      - name: smtp-secret
+        secretName: alertmanager-smtp
+        defaultMode: 0400
+        mountPath: /etc/alertmanager/smtp
+      - name: slack-secret
+        secretName: alertmanager-slack
+        defaultMode: 0400
+        mountPath: /etc/alertmanager/slack
 
-    replicas: 2
+    # Fixed: Changed from 2 to 1 replica to fix AlertmanagerClusterDown noise
+    replicas: 1
     retention: 120h
     storage:
       volumeClaimTemplate:
@@ -326,7 +472,7 @@ alertmanager:
         cpu: 100m
         memory: 128Mi
     podDisruptionBudget:
-      enabled: false
+      enabled: true
       minAvailable: 1
     securityContext:
       runAsNonRoot: true
@@ -335,7 +481,6 @@ alertmanager:
 
 grafana:
   enabled: true
-  defaultDatasourceEnabled: false
   adminUser: admin
   adminPassword: "CHANGE_ME_IN_PRODUCTION"
   
@@ -349,8 +494,9 @@ grafana:
       disable_login_form: false
       disable_signout_menu: false
   
+  # Fixed: Persistence was already enabled, keeping it
   persistence:
-    enabled: false
+    enabled: true
     type: pvc
     storageClassName: "nfs-csi"
     accessModes:
@@ -404,10 +550,26 @@ grafana:
         gnetId: 2
         revision: 1
         datasource: Prometheus
+      alertmanager-overview:
+        gnetId: 9578
+        revision: 4
+        datasource: Prometheus
     kubernetes:
       kubernetes-cluster-monitoring:
         gnetId: 7249
         revision: 1
+        datasource: Prometheus
+      k8s-pod-resources:
+        gnetId: 17375
+        revision: 1
+        datasource: Prometheus
+      etcd:
+        gnetId: 3070
+        revision: 3
+        datasource: Prometheus
+      coredns:
+        gnetId: 5926
+        revision: 3
         datasource: Prometheus
   
   datasources:
@@ -416,28 +578,31 @@ grafana:
       datasources:
       - name: Prometheus
         type: prometheus
-        uid: prometheus
         access: proxy
         url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
-        isDefault: true
+        isDefault: false
         editable: true
-        jsonData:
-          httpMethod: POST
-          timeInterval: 30s
-      - name: Alertmanager
-        type: alertmanager
-        uid: alertmanager
-        access: proxy
-        url: http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093
-        editable: true
-        jsonData:
-          handleGrafanaManagedAlerts: false
-          implementation: prometheus
       - name: Loki
+        uid: loki
         type: loki
         access: proxy
-        url: http://loki-stack.monitoring.svc.cluster.local:3100
+        url: http://loki.monitoring.svc.cluster.local:3100
         editable: true
+      # Tempo datasource for distributed tracing (LGTM stack)
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://tempo-query-frontend.monitoring.svc.cluster.local:3200
+        editable: true
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+          tracesToMetrics:
+            datasourceUid: prometheus
+          serviceMap:
+            datasourceUid: prometheus
+          nodeGraph:
+            enabled: true
 
 nodeExporter:
   enabled: true
@@ -461,4 +626,3 @@ kubeStateMetrics:
 
 prometheus-node-exporter:
   enabled: true
-

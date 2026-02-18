@@ -11,8 +11,11 @@ spec:
   - name: backup
     interval: 1m
     rules:
+    # Scripts push 0 for failure, 1 for success - alert when failure is reported
     - alert: BackupFailed
-      expr: backup_status{status="failed"} == 1
+      expr: |
+        backup_status{status="failed"} == 0
+        or on(instance, backup_type) backup_failure_count > 0
       for: 0m
       labels:
         severity: critical
@@ -20,7 +23,7 @@ spec:
       annotations:
         summary: "Backup {{ $labels.backup_type }} failed"
         description: "{{ $labels.backup_type }} backup failed on {{ $labels.instance }}"
-        
+
     - alert: BackupNotRun
       expr: (time() - backup_last_success_timestamp{backup_type="database"}) > 86400
       for: 1h
@@ -30,7 +33,7 @@ spec:
       annotations:
         summary: "Backup {{ $labels.backup_type }} has not run in 24 hours"
         description: "{{ $labels.backup_type }} backup last ran more than 24 hours ago on {{ $labels.instance }}"
-        
+
     - alert: NFSMountFailed
       expr: node_filesystem_avail_bytes{mountpoint=~"/mnt/backup.*|/backup.*|/nfs.*"} == 0
       for: 2m
