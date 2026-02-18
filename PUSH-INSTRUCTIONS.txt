@@ -1,8 +1,0 @@
-All changes are committed locally. Push from your machine (where Git is authenticated):
-
-  cd /home/ati1/rke2-monitoring-stack
-  git push origin main
-
-If you use SSH for GitHub, set the remote first:
-  git remote set-url origin git@github.com:Tedion/rke2-monitoring-stack.git
-  git push origin main
