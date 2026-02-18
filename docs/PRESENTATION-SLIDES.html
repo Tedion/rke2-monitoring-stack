@@ -1,0 +1,994 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitoring & Alerts System - Presentation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            overflow: hidden;
+        }
+        
+        .slide-container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 60px;
+            position: relative;
+        }
+        
+        .slide {
+            background: white;
+            border-radius: 20px;
+            padding: 60px;
+            max-width: 1200px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            display: none;
+            animation: fadeIn 0.5s;
+        }
+        
+        .slide.active {
+            display: block;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        h1 {
+            font-size: 3.5em;
+            color: #667eea;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        
+        h2 {
+            font-size: 2.5em;
+            color: #764ba2;
+            margin-bottom: 25px;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 15px;
+        }
+        
+        h3 {
+            font-size: 1.8em;
+            color: #555;
+            margin: 20px 0 15px 0;
+        }
+        
+        .slide-number {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            background: rgba(102, 126, 234, 0.2);
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .content {
+            font-size: 1.4em;
+            line-height: 1.8;
+        }
+        
+        ul, ol {
+            margin-left: 30px;
+            margin-top: 15px;
+        }
+        
+        li {
+            margin-bottom: 12px;
+        }
+        
+        .emoji {
+            font-size: 1.2em;
+            margin-right: 10px;
+        }
+        
+        .highlight {
+            background: #fff3cd;
+            padding: 3px 8px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            margin: 5px;
+            font-weight: bold;
+        }
+        
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .badge-danger {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .badge-warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .badge-info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 1.1em;
+        }
+        
+        th, td {
+            padding: 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        th {
+            background: #667eea;
+            color: white;
+            font-weight: bold;
+        }
+        
+        tr:hover {
+            background: #f5f5f5;
+        }
+        
+        .two-column {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin: 20px 0;
+        }
+        
+        .navigation {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            z-index: 1000;
+        }
+        
+        .nav-btn {
+            background: white;
+            border: 2px solid #667eea;
+            color: #667eea;
+            padding: 15px 30px;
+            border-radius: 30px;
+            cursor: pointer;
+            font-size: 1.1em;
+            font-weight: bold;
+            transition: all 0.3s;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        
+        .nav-btn:hover {
+            background: #667eea;
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+        }
+        
+        .title-slide {
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100%;
+        }
+        
+        .title-slide h1 {
+            font-size: 4.5em;
+            margin-bottom: 40px;
+        }
+        
+        .title-slide .subtitle {
+            font-size: 2em;
+            color: #666;
+            margin-bottom: 60px;
+        }
+        
+        .title-slide .date {
+            font-size: 1.5em;
+            color: #999;
+        }
+        
+        .icon-large {
+            font-size: 4em;
+            margin: 30px 0;
+        }
+        
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin: 30px 0;
+        }
+        
+        .comparison-box {
+            padding: 25px;
+            border-radius: 15px;
+            border: 3px solid;
+        }
+        
+        .comparison-box.before {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+        
+        .comparison-box.after {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+        
+        .flow-diagram {
+            background: #f8f9fa;
+            padding: 30px;
+            border-radius: 15px;
+            margin: 20px 0;
+            border-left: 5px solid #667eea;
+        }
+        
+        .flow-step {
+            margin: 15px 0;
+            padding-left: 30px;
+            position: relative;
+        }
+        
+        .flow-step::before {
+            content: "→";
+            position: absolute;
+            left: 0;
+            font-size: 1.5em;
+            color: #667eea;
+        }
+        
+        .key-points {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 15px;
+            margin: 20px 0;
+        }
+        
+        .key-points h3 {
+            color: white;
+            border-bottom: 2px solid rgba(255,255,255,0.3);
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .key-points ul {
+            list-style: none;
+            margin-left: 0;
+        }
+        
+        .key-points li::before {
+            content: "✓ ";
+            font-weight: bold;
+            font-size: 1.3em;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <!-- Slide 1: Title -->
+        <div class="slide active title-slide">
+            <div class="slide-number">1 / 16</div>
+            <div class="icon-large">🛡️</div>
+            <h1>Monitoring & Alerts System</h1>
+            <div class="subtitle">How We Keep Watch Over Our Infrastructure 24/7</div>
+            <div class="date">February 2026</div>
+        </div>
+
+        <!-- Slide 2: Problem Statement -->
+        <div class="slide">
+            <div class="slide-number">2 / 16</div>
+            <h2>What Problem Are We Solving?</h2>
+            <div class="comparison">
+                <div class="comparison-box before">
+                    <h3>❌ Before Monitoring</h3>
+                    <ul>
+                        <li>We find out when users complain</li>
+                        <li>No early warning system</li>
+                        <li>Hard to know what's broken</li>
+                        <li>Reactive instead of proactive</li>
+                    </ul>
+                </div>
+                <div class="comparison-box after">
+                    <h3>✅ With Monitoring</h3>
+                    <ul>
+                        <li>We know before users do</li>
+                        <li>Automatic alerts tell us what's wrong</li>
+                        <li>One place to see everything</li>
+                        <li>Proactive problem-solving</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="key-points">
+                <h3>Bottom Line:</h3>
+                <p style="font-size: 1.3em; text-align: center; margin-top: 20px;">
+                    We catch problems early and fix them faster
+                </p>
+            </div>
+        </div>
+
+        <!-- Slide 3: What Is Monitoring -->
+        <div class="slide">
+            <div class="slide-number">3 / 16</div>
+            <h2>What Is Monitoring?</h2>
+            <div class="content">
+                <div style="text-align: center; margin: 40px 0;">
+                    <div class="icon-large">🔍</div>
+                    <h3 style="font-size: 2em; color: #667eea;">Think of it as a 24/7 Watchman</h3>
+                </div>
+                
+                <div class="two-column">
+                    <div>
+                        <h3>🔍 Constantly Checking:</h3>
+                        <ul>
+                            <li>Are servers healthy?</li>
+                            <li>Are databases running?</li>
+                            <li>Did backups complete?</li>
+                            <li>Are applications responding?</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3>📢 Only Speaks Up When:</h3>
+                        <ul>
+                            <li>Something goes wrong</li>
+                            <li>Something needs attention</li>
+                            <li>Something is fixed</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="key-points" style="margin-top: 30px;">
+                    <p style="font-size: 1.2em; text-align: center;">
+                        Like a security guard who only calls when there's an issue – no spam, just important updates
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 4: What We Monitor -->
+        <div class="slide">
+            <div class="slide-number">4 / 16</div>
+            <h2>What We Monitor</h2>
+            <div class="content">
+                <div class="two-column">
+                    <div>
+                        <h3><span class="emoji">🖥️</span> Infrastructure</h3>
+                        <ul>
+                            <li>Server health (CPU, memory, disk)</li>
+                            <li>Network connectivity</li>
+                            <li>Storage availability</li>
+                        </ul>
+                        
+                        <h3><span class="emoji">💾</span> Databases</h3>
+                        <ul>
+                            <li>Database availability</li>
+                            <li>Connection health</li>
+                            <li>Performance metrics</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3><span class="emoji">💾</span> Backups <span class="badge badge-danger">CRITICAL</span></h3>
+                        <ul>
+                            <li><strong>Backup success/failure</strong></li>
+                            <li><strong>Backup completion time</strong></li>
+                            <li><strong>When backups last ran</strong></li>
+                            <li><strong>NFS mount status</strong></li>
+                        </ul>
+                        
+                        <h3><span class="emoji">🌐</span> Applications</h3>
+                        <ul>
+                            <li>Application availability</li>
+                            <li>Response times</li>
+                            <li>Service health</li>
+                        </ul>
+                        
+                        <h3><span class="emoji">📝</span> Logs</h3>
+                        <ul>
+                            <li>Centralized log storage</li>
+                            <li>Easy search & investigation</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 5: How We Get Notified -->
+        <div class="slide">
+            <div class="slide-number">5 / 16</div>
+            <h2>How We Get Notified</h2>
+            <div class="content">
+                <div class="two-column">
+                    <div>
+                        <h3><span class="emoji">📧</span> Email Alerts</h3>
+                        <ul>
+                            <li>Sent to team email</li>
+                            <li>Critical & important issues</li>
+                            <li>Examples:
+                                <ul style="margin-top: 10px;">
+                                    <li>"🚨 Backup Failed"</li>
+                                    <li>"⚠️ Database Down"</li>
+                                    <li>"✅ Backup Resolved"</li>
+                                </ul>
+                            </li>
+                        </ul>
+                        
+                        <h3><span class="emoji">💬</span> Slack Notifications</h3>
+                        <ul>
+                            <li>Channel: <span class="highlight">#alerts</span></li>
+                            <li>Same alerts as email</li>
+                            <li>Team can discuss together</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3>Alert Priority Levels:</h3>
+                        <table>
+                            <tr>
+                                <th>Priority</th>
+                                <th>Email</th>
+                                <th>Slack</th>
+                            </tr>
+                            <tr>
+                                <td><span class="badge badge-danger">Critical</span></td>
+                                <td>✅</td>
+                                <td>✅</td>
+                            </tr>
+                            <tr>
+                                <td><span class="badge badge-warning">High</span></td>
+                                <td>✅</td>
+                                <td>✅</td>
+                            </tr>
+                            <tr>
+                                <td><span class="badge badge-info">Warning</span></td>
+                                <td>❌</td>
+                                <td>✅</td>
+                            </tr>
+                            <tr>
+                                <td><span class="badge badge-info">Low</span></td>
+                                <td>❌</td>
+                                <td>✅</td>
+                            </tr>
+                        </table>
+                        <p style="margin-top: 20px; font-size: 1.1em;">
+                            <strong>We don't get spammed</strong> – only real issues trigger alerts
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 6: Backup Monitoring -->
+        <div class="slide">
+            <div class="slide-number">6 / 16</div>
+            <h2><span class="emoji">💾</span> Backup Monitoring – Why It Matters</h2>
+            <div class="content">
+                <div class="key-points">
+                    <h3>Backups Are Critical</h3>
+                </div>
+                
+                <div class="two-column">
+                    <div>
+                        <h3>What We Monitor:</h3>
+                        <ul>
+                            <li>✅ Did backup run successfully?</li>
+                            <li>⏰ When did it last run?</li>
+                            <li>⚠️ Did it fail? Why?</li>
+                            <li>📊 How long did it take?</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3>What Happens:</h3>
+                        <ul>
+                            <li><strong>If backup fails</strong> → Immediate email + Slack</li>
+                            <li><strong>If backup doesn't run for 24h</strong> → Alert sent</li>
+                            <li><strong>When backup succeeds</strong> → "Resolved" notification</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="key-points" style="margin-top: 30px;">
+                    <h3>Why This Matters:</h3>
+                    <ul>
+                        <li>Data protection is non-negotiable</li>
+                        <li>Early detection = faster recovery</li>
+                        <li>Compliance & audit requirements</li>
+                        <li>Peace of mind</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 7: Dashboards -->
+        <div class="slide">
+            <div class="slide-number">7 / 16</div>
+            <h2><span class="emoji">📊</span> Dashboards – See Everything at a Glance</h2>
+            <div class="content">
+                <h3>Grafana Dashboards</h3>
+                
+                <div class="two-column">
+                    <div>
+                        <h3>What You Can See:</h3>
+                        <ul>
+                            <li>System health overview</li>
+                            <li><strong>Backup status dashboard</strong>
+                                <ul style="margin-top: 10px;">
+                                    <li>Success/failure</li>
+                                    <li>Duration</li>
+                                    <li>Last run time</li>
+                                </ul>
+                            </li>
+                            <li>Server performance graphs</li>
+                            <li>Database metrics</li>
+                            <li>Application status</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3>How to Access:</h3>
+                        <ul>
+                            <li>URL: <span class="highlight">http://[server-ip]:30180</span></li>
+                            <li>Login: Contact IT team</li>
+                        </ul>
+                        
+                        <h3 style="margin-top: 30px;">What It Looks Like:</h3>
+                        <ul>
+                            <li><span class="badge badge-success">Green</span> = Everything OK ✅</li>
+                            <li><span class="badge badge-danger">Red</span> = Problem detected ⚠️</li>
+                            <li>Graphs show trends over time</li>
+                            <li>Simple labels, easy to understand</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="key-points" style="margin-top: 30px;">
+                    <p style="text-align: center; font-size: 1.2em;">
+                        You don't need to be technical – colors and labels make it clear
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 8: Real-World Example -->
+        <div class="slide">
+            <div class="slide-number">8 / 16</div>
+            <h2>Real-World Example – Backup Alert Flow</h2>
+            <div class="content">
+                <h3>Scenario: Backup Fails</h3>
+                
+                <div class="flow-diagram">
+                    <div class="flow-step">
+                        <strong>1. Backup script runs</strong> (2:00 AM)
+                        <br>Backup fails due to disk space issue
+                    </div>
+                    <div class="flow-step">
+                        <strong>2. Monitoring detects failure</strong> (within 1 minute)
+                        <br>System checks: "Backup failed? Yes!" → Alert triggered
+                    </div>
+                    <div class="flow-step">
+                        <strong>3. Team gets notified</strong> (immediately)
+                        <br>📧 Email: "🚨 CRITICAL: Backup database failed"
+                        <br>💬 Slack: Same alert in #alerts channel
+                    </div>
+                    <div class="flow-step">
+                        <strong>4. Team investigates</strong> (within minutes)
+                        <br>Check Slack/email → Log into dashboard → Fix issue (free up disk space)
+                    </div>
+                    <div class="flow-step">
+                        <strong>5. Next backup succeeds</strong> (next day 2:00 AM)
+                        <br>📧 Email: "✅ Backup database failed – RESOLVED"
+                    </div>
+                </div>
+                
+                <div class="key-points" style="margin-top: 30px;">
+                    <h3>Result:</h3>
+                    <p style="text-align: center; font-size: 1.3em;">
+                        Problem caught and fixed before anyone notices
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 9: What to Do -->
+        <div class="slide">
+            <div class="slide-number">9 / 16</div>
+            <h2>What Should You Do When You Get an Alert?</h2>
+            <div class="content">
+                <div class="two-column">
+                    <div>
+                        <h3><span class="emoji">📧</span> If You Receive Email:</h3>
+                        <ol>
+                            <li><strong>Read the subject line</strong>
+                                <br>Usually tells you what's wrong
+                            </li>
+                            <li><strong>Check the details</strong>
+                                <br>What component? When? Severity?
+                            </li>
+                            <li><strong>Take action:</strong>
+                                <ul style="margin-top: 10px;">
+                                    <li>If technical → Investigate & fix</li>
+                                    <li>If not → Forward to technical team</li>
+                                </ul>
+                            </li>
+                            <li><strong>"Resolved" alerts:</strong>
+                                <br>Problem is fixed → No action needed
+                            </li>
+                        </ol>
+                    </div>
+                    <div>
+                        <h3><span class="emoji">💬</span> If You See Slack Alert:</h3>
+                        <ul>
+                            <li>Same information as email</li>
+                            <li>Team can discuss in channel</li>
+                            <li>Coordinate response</li>
+                            <li>Update when resolved</li>
+                        </ul>
+                        
+                        <div class="key-points" style="margin-top: 30px;">
+                            <h3>Remember:</h3>
+                            <p>If you're not technical, forward to technical team or post in Slack</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 10: Benefits -->
+        <div class="slide">
+            <div class="slide-number">10 / 16</div>
+            <h2>Benefits Summary</h2>
+            <div class="content">
+                <div class="two-column">
+                    <div>
+                        <h3><span class="emoji">🎯</span> For the Organization:</h3>
+                        <ul>
+                            <li>✅ Faster problem resolution
+                                <br><small>Issues detected in minutes, not hours</small>
+                            </li>
+                            <li>✅ Proactive management
+                                <br><small>Fix problems before they escalate</small>
+                            </li>
+                            <li>✅ Visibility
+                                <br><small>Everyone knows system status</small>
+                            </li>
+                            <li>✅ Compliance & audit
+                                <br><small>Backup monitoring ensures data protection</small>
+                            </li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3><span class="emoji">💼</span> For Management:</h3>
+                        <ul>
+                            <li>✅ Reduced risk of data loss</li>
+                            <li>✅ Lower costs from faster resolution</li>
+                            <li>✅ Better SLA compliance</li>
+                            <li>✅ Peace of mind – systems watched 24/7</li>
+                        </ul>
+                        
+                        <div class="key-points" style="margin-top: 30px;">
+                            <h3>Key Metrics:</h3>
+                            <ul>
+                                <li>Less downtime</li>
+                                <li>Better user experience</li>
+                                <li>Data-driven decisions</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 11: Key Metrics -->
+        <div class="slide">
+            <div class="slide-number">11 / 16</div>
+            <h2>Key Metrics We Track</h2>
+            <div class="content">
+                <h3>📊 What the Numbers Tell Us:</h3>
+                
+                <div class="two-column">
+                    <div>
+                        <h3>Backup Metrics:</h3>
+                        <ul>
+                            <li><strong>Success rate:</strong> Target 100%</li>
+                            <li><strong>Duration:</strong> How long backups take</li>
+                            <li><strong>Frequency:</strong> Daily backups verified</li>
+                        </ul>
+                        
+                        <h3>System Health:</h3>
+                        <ul>
+                            <li><strong>Server uptime:</strong> Target 99.9%+</li>
+                            <li><strong>Response times:</strong> Applications responding quickly</li>
+                            <li><strong>Resource usage:</strong> CPU, memory, disk</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3>Alert Statistics:</h3>
+                        <ul>
+                            <li>How many alerts per week/month</li>
+                            <li>Average resolution time</li>
+                            <li>Most common issues</li>
+                        </ul>
+                        
+                        <div class="key-points" style="margin-top: 30px;">
+                            <h3>These Metrics Help Us:</h3>
+                            <ul>
+                                <li>Identify trends</li>
+                                <li>Plan capacity</li>
+                                <li>Improve reliability</li>
+                                <li>Report to stakeholders</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 12: Access & Resources -->
+        <div class="slide">
+            <div class="slide-number">12 / 16</div>
+            <h2>Access & Resources</h2>
+            <div class="content">
+                <div class="two-column">
+                    <div>
+                        <h3><span class="emoji">🔗</span> How to Access:</h3>
+                        <ul>
+                            <li><strong>Grafana Dashboards:</strong>
+                                <br><span class="highlight">http://[server-ip]:30180</span>
+                            </li>
+                            <li><strong>Slack Channel:</strong>
+                                <br><span class="highlight">#alerts</span>
+                            </li>
+                            <li><strong>Email:</strong>
+                                <br>Alerts sent to team email
+                            </li>
+                        </ul>
+                        
+                        <h3 style="margin-top: 30px;"><span class="emoji">📚</span> Documentation:</h3>
+                        <ul>
+                            <li>Setup Snapshot</li>
+                            <li>Non-Technical Guide</li>
+                            <li>Deployment Guide</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3><span class="emoji">🆘</span> Support:</h3>
+                        <ul>
+                            <li>Technical questions → DevOps/IT team</li>
+                            <li>Alert issues → Check Slack #alerts</li>
+                            <li>Dashboard access → Request from IT</li>
+                        </ul>
+                        
+                        <div class="key-points" style="margin-top: 30px;">
+                            <h3>Repository:</h3>
+                            <p style="word-break: break-all;">
+                                github.com/Tedion/rke2-monitoring-stack
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 13: Common Questions -->
+        <div class="slide">
+            <div class="slide-number">13 / 16</div>
+            <h2>Common Questions</h2>
+            <div class="content">
+                <div class="flow-diagram">
+                    <div class="flow-step">
+                        <strong>Q: Will I get spammed with alerts?</strong>
+                        <br><strong>A:</strong> No. Only real issues trigger alerts. Critical and High alerts go to email. Warnings go to Slack only.
+                    </div>
+                    <div class="flow-step">
+                        <strong>Q: What if I'm not technical?</strong>
+                        <br><strong>A:</strong> That's fine! Alerts are written in plain language. Forward to technical team or post in Slack.
+                    </div>
+                    <div class="flow-step">
+                        <strong>Q: How often do backups run?</strong>
+                        <br><strong>A:</strong> Daily (or as configured). You'll only get an alert if one fails or doesn't run.
+                    </div>
+                    <div class="flow-step">
+                        <strong>Q: What's Critical vs High?</strong>
+                        <br><strong>A:</strong> Critical = immediate action (backup failed). High = important but less urgent (backup hasn't run in 24h).
+                    </div>
+                    <div class="flow-step">
+                        <strong>Q: Can I see the dashboards?</strong>
+                        <br><strong>A:</strong> Yes! Ask IT for access. Dashboards show system status visually – no technical knowledge needed.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 14: Next Steps -->
+        <div class="slide">
+            <div class="slide-number">14 / 16</div>
+            <h2>Next Steps</h2>
+            <div class="content">
+                <div class="two-column">
+                    <div>
+                        <h3><span class="emoji">🎯</span> For Everyone:</h3>
+                        <ol>
+                            <li>Know where alerts come from
+                                <ul>
+                                    <li>Email: [Your Email]</li>
+                                    <li>Slack: #alerts channel</li>
+                                </ul>
+                            </li>
+                            <li>Understand alert priorities
+                                <ul>
+                                    <li>Critical/High = Action needed</li>
+                                    <li>Warning/Low = Monitor</li>
+                                </ul>
+                            </li>
+                            <li>Know what to do
+                                <ul>
+                                    <li>Read the alert</li>
+                                    <li>Forward if needed</li>
+                                    <li>Check Slack for discussion</li>
+                                </ul>
+                            </li>
+                        </ol>
+                    </div>
+                    <div>
+                        <h3><span class="emoji">🔧</span> For Technical Team:</h3>
+                        <ul>
+                            <li>Monitor dashboards regularly</li>
+                            <li>Respond to alerts promptly</li>
+                            <li>Update team when resolved</li>
+                            <li>Review metrics monthly</li>
+                        </ul>
+                        
+                        <h3 style="margin-top: 30px;"><span class="emoji">📈</span> For Management:</h3>
+                        <ul>
+                            <li>Review alert statistics monthly</li>
+                            <li>Track backup success rates</li>
+                            <li>Use metrics for planning</li>
+                            <li>Ensure compliance met</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 15: Summary -->
+        <div class="slide">
+            <div class="slide-number">15 / 16</div>
+            <h2>Summary – Key Takeaways</h2>
+            <div class="content">
+                <div class="two-column">
+                    <div>
+                        <h3><span class="emoji">🎯</span> What We Have:</h3>
+                        <ul>
+                            <li>✅ 24/7 monitoring</li>
+                            <li>✅ Automatic alerts</li>
+                            <li>✅ Visual dashboards</li>
+                            <li>✅ Backup monitoring</li>
+                            <li>✅ Centralized logs</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3><span class="emoji">🎯</span> What This Means:</h3>
+                        <ul>
+                            <li>✅ Faster problem detection</li>
+                            <li>✅ Proactive management</li>
+                            <li>✅ Better reliability</li>
+                            <li>✅ Peace of mind</li>
+                            <li>✅ Team coordination</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="key-points" style="margin-top: 40px;">
+                    <h3>Bottom Line:</h3>
+                    <p style="text-align: center; font-size: 1.4em; line-height: 1.6;">
+                        We have a professional monitoring system that watches our infrastructure 24/7 and alerts us immediately when something needs attention – especially backups, which are critical for data protection.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 16: Thank You -->
+        <div class="slide title-slide">
+            <div class="slide-number">16 / 16</div>
+            <div class="icon-large">❓</div>
+            <h1>Questions?</h1>
+            <div class="subtitle" style="margin-top: 60px;">
+                <p><strong>Contact:</strong></p>
+                <p>Technical Team: [Contact Info]</p>
+                <p>Slack: #alerts channel</p>
+                <p style="margin-top: 40px;">Documentation: See docs/ folder</p>
+                <p style="margin-top: 20px; font-size: 0.8em; color: #999;">
+                    github.com/Tedion/rke2-monitoring-stack
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <div class="navigation">
+        <button class="nav-btn" onclick="previousSlide()">← Previous</button>
+        <button class="nav-btn" onclick="nextSlide()">Next →</button>
+    </div>
+
+    <script>
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.slide');
+        const totalSlides = slides.length;
+
+        function showSlide(n) {
+            slides[currentSlide].classList.remove('active');
+            currentSlide = (n + totalSlides) % totalSlides;
+            slides[currentSlide].classList.add('active');
+        }
+
+        function nextSlide() {
+            showSlide(currentSlide + 1);
+        }
+
+        function previousSlide() {
+            showSlide(currentSlide - 1);
+        }
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                previousSlide();
+            }
+        });
+
+        // Touch/swipe support for mobile
+        let touchStartX = 0;
+        let touchEndX = 0;
+
+        document.addEventListener('touchstart', (e) => {
+            touchStartX = e.changedTouches[0].screenX;
+        });
+
+        document.addEventListener('touchend', (e) => {
+            touchEndX = e.changedTouches[0].screenX;
+            handleSwipe();
+        });
+
+        function handleSwipe() {
+            if (touchEndX < touchStartX - 50) {
+                nextSlide();
+            }
+            if (touchEndX > touchStartX + 50) {
+                previousSlide();
+            }
+        }
+    </script>
+</body>
+</html>
