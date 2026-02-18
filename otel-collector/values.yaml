@@ -1,0 +1,80 @@
+# OpenTelemetry Collector Helm Values
+# DaemonSet mode - collect from every node
+
+mode: daemonset
+
+# Image configuration (required in newer chart versions)
+image:
+  repository: otel/opentelemetry-collector
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# Collector configuration - all components must be under 'config'
+config:
+  # Receivers - what data to collect
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+  
+  # Processors - transform data before exporting
+  processors:
+    batch:
+      timeout: 10s
+      send_batch_size: 1024
+      send_batch_max_size: 2048
+    
+    memory_limiter:
+      limit_mib: 512
+      spike_limit_mib: 128
+      check_interval: 5s
+  
+  # Exporters - where to send data
+  exporters:
+    otlp:
+      endpoint: tempo.monitoring.svc.cluster.local:4317
+      tls:
+        insecure: true
+    
+    loki:
+      endpoint: http://loki-stack.monitoring.svc.cluster.local:3100/loki/api/v1/push
+    
+    prometheusremotewrite:
+      endpoint: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090/api/v1/write
+      tls:
+        insecure: true
+  
+  # Service pipelines - connect receivers -> processors -> exporters
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [otlp]
+      
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [prometheusremotewrite]
+      
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [loki]
+
+# Resource limits per pod (DaemonSet)
+resources:
+  limits:
+    cpu: 500m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 512Mi
+
+# ServiceMonitor for Prometheus to scrape OTel Collector metrics
+serviceMonitor:
+  enabled: true
+  interval: 30s

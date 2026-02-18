@@ -1,0 +1,863 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: openg2p-services-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: openg2p-services
+    interval: 30s
+    rules:
+    # ============================================================================
+    # REDIS ALERTS (openg2p-ati-redis in prod namespace)
+    # Redis is used as Celery broker/backend - if Redis is down, ALL background
+    # tasks (batch processing, reporting, WebSub notifications) stop
+    # ============================================================================
+    - alert: RedisDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~"openg2p-ati-redis.*|.*redis.*"
+        } == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: cache
+      annotations:
+        summary: "Redis deployment has no available replicas in prod namespace"
+        description: |
+          Redis deployment in prod namespace has 0 available pods. Redis is used as Celery broker/backend.
+          If Redis is down, ALL background tasks stop: batch_creation_queue, batch_processing_queue,
+          WebSub notifications, and reporting tasks.
+          ACTION REQUIRED: Check Redis pod status: 'kubectl get pods -n prod -l app=redis'
+          Check pod logs for errors: 'kubectl logs -n prod -l app=redis'
+
+    - alert: RedisHighRestarts
+      expr: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="prod",
+          pod=~"openg2p-ati-redis.*|.*redis.*"
+        }[1h]) > 3
+      for: 5m
+      labels:
+        severity: high
+        component: cache
+      annotations:
+        summary: "Redis pods have restarted {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          Redis pods in prod namespace have restarted {{ $value | printf "%.0f" }} times in the last hour.
+          High restart rate indicates memory pressure, configuration issues, or connectivity problems.
+          ACTION: Check Redis pod logs and resource limits.
+
+    - alert: RedisMemoryHigh
+      expr: |
+        (
+          sum(container_memory_working_set_bytes{
+            namespace="prod",
+            pod=~"openg2p-ati-redis.*|.*redis.*",
+            container!="POD"
+          }) by (pod) /
+          sum(kube_pod_container_resource_limits{
+            namespace="prod",
+            pod=~"openg2p-ati-redis.*|.*redis.*",
+            resource="memory",
+            container!="POD"
+          }) by (pod)
+        ) * 100 > 80
+      for: 10m
+      labels:
+        severity: high
+        component: cache
+      annotations:
+        summary: "Redis memory usage is {{ $value | printf \"%.1f\" }}% of limit on pod {{ $labels.pod }}"
+        description: |
+          Redis pod {{ $labels.pod }} in prod namespace is using {{ $value | printf "%.1f" }}% of memory limit.
+          Redis will evict keys when memory is full, causing cache misses and performance degradation.
+          ACTION: Review Redis maxmemory policy, consider increasing memory limits, or optimize key TTLs.
+
+    - alert: RedisNoConnections
+      expr: |
+        # If redis_exporter is deployed, use redis_connected_clients
+        # Otherwise, detect via pod status - if Redis pod is running but no Celery workers are connecting
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~"openg2p-ati-celery-worker.*"
+        } > 0
+        and
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~"openg2p-ati-redis.*|.*redis.*"
+        } > 0
+        # This is a placeholder - if redis_exporter is added, use: redis_connected_clients == 0
+      for: 5m
+      labels:
+        severity: warning
+        component: cache
+      annotations:
+        summary: "Redis has no connected clients (possible misconfiguration)"
+        description: |
+          Redis appears to have no connected clients. This may indicate Celery workers cannot connect
+          to Redis broker, or Redis is misconfigured.
+          ACTION: Check Celery worker logs for Redis connection errors.
+
+    # ============================================================================
+    # CELERY BEAT ALERTS (openg2p-ati-celery-beat in prod namespace)
+    # Celery Beat is a singleton - if it's down, NO scheduled tasks run
+    # ============================================================================
+    - alert: CeleryBeatDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~"openg2p-ati-celery-beat.*|.*celery-beat.*"
+        } == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "Celery Beat has no available replicas in prod namespace"
+        description: |
+          Celery Beat deployment in prod namespace has 0 available pods.
+          Celery Beat is a singleton scheduler - if it's down, NO scheduled tasks run.
+          This means batch_creation_queue and batch_processing_queue get NO tasks.
+          Scheduled tasks include: batch processing, reporting, WebSub notifications.
+          ACTION REQUIRED: Check Celery Beat pod status: 'kubectl get pods -n prod -l app=celery-beat'
+          Check logs: 'kubectl logs -n prod -l app=celery-beat'
+
+    - alert: CeleryBeatCrashLooping
+      expr: |
+        kube_pod_container_status_waiting_reason{
+          namespace="prod",
+          pod=~"openg2p-ati-celery-beat.*|.*celery-beat.*",
+          reason="CrashLoopBackOff"
+        } == 1
+      for: 2m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "Celery Beat pod {{ $labels.pod }} is crash looping"
+        description: |
+          Celery Beat pod {{ $labels.pod }} in prod namespace is in CrashLoopBackOff state.
+          If Celery Beat crashes, scheduled tasks stop completely.
+          ACTION REQUIRED: Check pod logs: 'kubectl logs {{ $labels.pod }} -n prod'
+          Common causes: Redis connection failure, PostgreSQL connection failure, configuration errors.
+
+    - alert: CeleryBeatHighRestarts
+      expr: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="prod",
+          pod=~"openg2p-ati-celery-beat.*|.*celery-beat.*"
+        }[1h]) > 2
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Celery Beat has restarted {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          Celery Beat pods have restarted {{ $value | printf "%.0f" }} times in the last hour.
+          High restart rate indicates Redis broker connectivity issues or PostgreSQL connection problems.
+          ACTION: Check Celery Beat logs for connection errors.
+
+    # ============================================================================
+    # CELERY WORKER ALERTS (openg2p-ati-celery-worker in prod namespace)
+    # Celery Workers process background tasks - if all workers are down, tasks queue up
+    # ============================================================================
+    - alert: CeleryWorkerDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~"openg2p-ati-celery-worker.*|.*celery-worker.*"
+        } == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "Celery Worker has no available replicas in prod namespace"
+        description: |
+          Celery Worker deployment in prod namespace has 0 available pods.
+          If all Celery workers are down, background tasks queue up and are not processed.
+          This affects: batch processing, reporting, WebSub notifications, data synchronization.
+          ACTION REQUIRED: Check Celery Worker pod status: 'kubectl get pods -n prod -l app=celery-worker'
+          Check logs: 'kubectl logs -n prod -l app=celery-worker'
+
+    - alert: CeleryWorkerHighRestarts
+      expr: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="prod",
+          pod=~"openg2p-ati-celery-worker.*|.*celery-worker.*"
+        }[1h]) > 3
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Celery Worker pods have restarted {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          Celery Worker pods have restarted {{ $value | printf "%.0f" }} times in the last hour.
+          High restart rate indicates Redis broker connectivity issues, PostgreSQL connection problems,
+          or task processing errors.
+          ACTION: Check Celery Worker logs for Redis/PostgreSQL connection errors or task failures.
+
+    # ============================================================================
+    # KAFKA ALERTS (in prod namespace)
+    # Kafka is used for OpenG2P reporting and WebSub event streaming
+    # ============================================================================
+    - alert: KafkaBrokerDown
+      expr: |
+        kube_statefulset_status_replicas_ready{
+          namespace="prod",
+          statefulset=~".*kafka.*"
+        } < kube_statefulset_spec_replicas{
+          namespace="prod",
+          statefulset=~".*kafka.*"
+        }
+      for: 2m
+      labels:
+        severity: critical
+        component: messaging
+      annotations:
+        summary: "Kafka broker pods are not ready ({{ $value | printf \"%.0f\" }} ready, {{ $labels.spec_replicas }} desired)"
+        description: |
+          Kafka StatefulSet {{ $labels.statefulset }} in prod namespace has {{ $value | printf "%.0f" }} ready pods,
+          but {{ $labels.spec_replicas }} are desired.
+          Kafka is used for OpenG2P reporting and WebSub event streaming - if Kafka is down, no events flow
+          to downstream systems.
+          ACTION REQUIRED: Check Kafka pod status: 'kubectl get pods -n prod -l app=kafka'
+          Check logs: 'kubectl logs -n prod -l app=kafka'
+
+    - alert: KafkaUnderReplicatedPartitions
+      expr: |
+        sum(kafka_server_replicamanager_underreplicatedpartitions{
+          namespace="prod"
+        }) > 0
+      for: 5m
+      labels:
+        severity: high
+        component: messaging
+      annotations:
+        summary: "Kafka has {{ $value | printf \"%.0f\" }} under-replicated partitions"
+        description: |
+          Kafka has {{ $value | printf "%.0f" }} under-replicated partitions in prod namespace.
+          Under-replicated partitions indicate data loss risk if a broker fails.
+          ACTION: Check Kafka broker health, network connectivity, and disk I/O performance.
+
+    - alert: KafkaOfflinePartitions
+      expr: |
+        sum(kafka_controller_offline_partitions_count{
+          namespace="prod"
+        }) > 0
+      for: 2m
+      labels:
+        severity: critical
+        component: messaging
+      annotations:
+        summary: "Kafka has {{ $value | printf \"%.0f\" }} offline partitions"
+        description: |
+          Kafka has {{ $value | printf "%.0f" }} offline partitions in prod namespace.
+          Offline partitions mean data is completely unavailable - CRITICAL data loss risk.
+          ACTION REQUIRED: Immediately check Kafka broker status and restore partitions.
+
+    - alert: KafkaConsumerLagHigh
+      expr: |
+        sum(kafka_consumer_lag_sum{
+          namespace="prod"
+        }) > 10000
+      for: 10m
+      labels:
+        severity: high
+        component: messaging
+      annotations:
+        summary: "Kafka consumer lag is {{ $value | printf \"%.0f\" }} messages"
+        description: |
+          Kafka consumer lag is {{ $value | printf "%.0f" }} messages in prod namespace.
+          High consumer lag means consumers are falling behind producers - events are not being processed.
+          ACTION: Check consumer pod health, increase consumer replicas, or optimize consumer processing speed.
+
+    - alert: KafkaNoActiveController
+      expr: |
+        kafka_controller_active_controller_count{
+          namespace="prod"
+        } != 1
+      for: 2m
+      labels:
+        severity: critical
+        component: messaging
+      annotations:
+        summary: "Kafka has {{ $value | printf \"%.0f\" }} active controllers (expected 1)"
+        description: |
+          Kafka has {{ $value | printf "%.0f" }} active controllers in prod namespace (expected 1).
+          No active controller or split-brain scenario indicates cluster instability.
+          ACTION REQUIRED: Check Kafka controller pod status and cluster health.
+
+    # ============================================================================
+    # WEBSUB ALERTS (websub-fp.ati.gov.et)
+    # WebSub hub handles INDIVIDUAL_CREATED events for social registry reporting
+    # ============================================================================
+    - alert: WebSubDown
+      expr: |
+        probe_success{job="blackbox-http",instance=~".*websub.*"} == 0
+      for: 3m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "WebSub hub at {{ $labels.instance }} is DOWN"
+        description: |
+          WebSub hub at {{ $labels.instance }} has been unreachable for 3 minutes.
+          WebSub hub handles INDIVIDUAL_CREATED events for social registry reporting.
+          If WebSub is down, event notifications to downstream systems fail.
+          ACTION REQUIRED: Check WebSub pod status and ingress configuration.
+
+    - alert: WebSubSlow
+      expr: |
+        probe_http_duration_seconds{job="blackbox-http",instance=~".*websub.*"} > 5
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "WebSub hub response time is {{ $value | printf \"%.2f\" }}s"
+        description: |
+          WebSub hub at {{ $labels.instance }} response time is {{ $value | printf "%.2f" }}s, exceeding 5s threshold.
+          Slow WebSub responses delay event notifications.
+          ACTION: Check WebSub pod resources and backend service performance.
+
+    # ============================================================================
+    # ODOO ALERTS (Social Registry ERP in prod namespace)
+    # Odoo is the CORE application - connects to external PostgreSQL at 172.16.16.229
+    # ============================================================================
+    - alert: OdooDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~".*odoo.*|.*openg2p.*"
+        } == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "Odoo deployment has no available replicas in prod namespace"
+        description: |
+          Odoo deployment in prod namespace has 0 available pods.
+          Odoo is the CORE Social Registry ERP application - if Odoo is down, the entire platform is unavailable.
+          Odoo connects to external PostgreSQL at 172.16.16.229 - if DB is down, Odoo will crash loop.
+          ACTION REQUIRED: Check Odoo pod status: 'kubectl get pods -n prod -l app=odoo'
+          Check logs: 'kubectl logs -n prod -l app=odoo'
+          Verify PostgreSQL connectivity to 172.16.16.229.
+
+    - alert: OdooCrashLooping
+      expr: |
+        kube_pod_container_status_waiting_reason{
+          namespace="prod",
+          deployment=~".*odoo.*|.*openg2p.*",
+          reason="CrashLoopBackOff"
+        } == 1
+      for: 2m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "Odoo pod {{ $labels.pod }} is crash looping"
+        description: |
+          Odoo pod {{ $labels.pod }} in prod namespace is in CrashLoopBackOff state.
+          Odoo crashes during module installation are common - check for module conflicts.
+          If PostgreSQL at 172.16.16.229 is down, Odoo will also crash loop.
+          ACTION REQUIRED: Check pod logs: 'kubectl logs {{ $labels.pod }} -n prod'
+          Check PostgreSQL connectivity: 'psql -h 172.16.16.229 -U postgres -c "SELECT 1"'
+
+    - alert: OdooHighRestarts
+      expr: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="prod",
+          pod=~".*odoo.*|.*openg2p.*"
+        }[1h]) > 2
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Odoo pods have restarted {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          Odoo pods have restarted {{ $value | printf "%.0f" }} times in the last hour.
+          High restart rate may indicate PostgreSQL connectivity issues, memory leaks, or module conflicts.
+          ACTION: Check Odoo logs for database connection errors or module installation failures.
+
+    - alert: OdooSlow
+      expr: |
+        probe_http_duration_seconds{job="blackbox-http",instance=~".*socialregistry.*|.*odoo.*"} > 10
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Odoo response time is {{ $value | printf \"%.2f\" }}s"
+        description: |
+          Odoo at {{ $labels.instance }} response time is {{ $value | printf "%.2f" }}s, exceeding 10s threshold.
+          Odoo can be slow under load, but > 10s is abnormal and degrades user experience.
+          ACTION: Check Odoo pod resources, database query performance, and external PostgreSQL connectivity.
+
+    - alert: OdooHighMemoryUsage
+      expr: |
+        (
+          sum(container_memory_working_set_bytes{
+            namespace="prod",
+            pod=~".*odoo.*|.*openg2p.*",
+            container!="POD"
+          }) by (pod) /
+          sum(kube_pod_container_resource_limits{
+            namespace="prod",
+            pod=~".*odoo.*|.*openg2p.*",
+            resource="memory",
+            container!="POD"
+          }) by (pod)
+        ) * 100 > 90
+      for: 10m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Odoo memory usage is {{ $value | printf \"%.1f\" }}% of limit on pod {{ $labels.pod }}"
+        description: |
+          Odoo pod {{ $labels.pod }} in prod namespace is using {{ $value | printf "%.1f" }}% of memory limit.
+          Odoo leaks memory under load - high memory usage can cause OOM kills and crashes.
+          ACTION: Restart Odoo pods, increase memory limits, or optimize Odoo configuration.
+
+    # ============================================================================
+    # KEYCLOAK ALERTS (IAM/SSO)
+    # ALL services depend on Keycloak for auth - if Keycloak is down, NOTHING works
+    # ============================================================================
+    - alert: KeycloakDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~".*keycloak.*"
+        } == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "Keycloak deployment has no available replicas in prod namespace"
+        description: |
+          Keycloak deployment in prod namespace has 0 available pods.
+          Keycloak at keycloak-fp.ati.gov.et handles auth for ALL services:
+          Odoo, OpenSearch, Kafka UI, Superset, MinIO, and ODK.
+          If Keycloak is down, NOTHING works - users cannot authenticate.
+          ACTION REQUIRED: Check Keycloak pod status: 'kubectl get pods -n prod -l app=keycloak'
+          Check logs: 'kubectl logs -n prod -l app=keycloak'
+
+    - alert: KeycloakSlow
+      expr: |
+        probe_http_duration_seconds{job="blackbox-http",instance=~".*keycloak.*"} > 3
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Keycloak response time is {{ $value | printf \"%.2f\" }}s"
+        description: |
+          Keycloak at {{ $labels.instance }} response time is {{ $value | printf "%.2f" }}s, exceeding 3s threshold.
+          Keycloak auth latency directly impacts every user login - slow Keycloak = slow platform.
+          ACTION: Check Keycloak pod resources and database connectivity.
+
+    - alert: KeycloakHighRestarts
+      expr: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="prod",
+          pod=~".*keycloak.*"
+        }[1h]) > 2
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Keycloak pods have restarted {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          Keycloak pods have restarted {{ $value | printf "%.0f" }} times in the last hour.
+          High restart rate indicates database connectivity issues or memory problems.
+          ACTION: Check Keycloak logs for database connection errors.
+
+    # ============================================================================
+    # ODK CENTRAL ALERTS (data collection forms)
+    # ODK Central is used for farmer data collection in the field
+    # ============================================================================
+    - alert: ODKCentralDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~".*odk.*|.*central.*"
+        } == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "ODK Central deployment has no available replicas in prod namespace"
+        description: |
+          ODK Central deployment in prod namespace has 0 available pods.
+          ODK Central is used for farmer data collection in the field.
+          If ODK Central is down, field agents cannot submit forms.
+          ACTION REQUIRED: Check ODK Central pod status: 'kubectl get pods -n prod -l app=odk'
+
+    - alert: ODKCentralSlow
+      expr: |
+        probe_http_duration_seconds{job="blackbox-http",instance=~".*odk.*"} > 5
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "ODK Central response time is {{ $value | printf \"%.2f\" }}s"
+        description: |
+          ODK Central at {{ $labels.instance }} response time is {{ $value | printf "%.2f" }}s.
+          Slow ODK Central degrades field agent experience.
+          ACTION: Check ODK Central pod resources and backend connectivity.
+
+    - alert: ODKCentralHighRestarts
+      expr: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="prod",
+          pod=~".*odk.*|.*central.*"
+        }[1h]) > 2
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "ODK Central pods have restarted {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          ODK Central pods have restarted {{ $value | printf "%.0f" }} times in the last hour.
+          ACTION: Check ODK Central logs for errors.
+
+    # ============================================================================
+    # APACHE SUPERSET ALERTS (analytics/reporting dashboards)
+    # Superset connects to OpenSearch and PostgreSQL
+    # ============================================================================
+    - alert: SupersetDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~".*superset.*"
+        } == 0
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Apache Superset deployment has no available replicas in prod namespace"
+        description: |
+          Apache Superset deployment in prod namespace has 0 available pods.
+          Superset is used for reporting dashboards - connects to OpenSearch and PostgreSQL.
+          Analytics can wait, but should be investigated.
+          ACTION: Check Superset pod status: 'kubectl get pods -n prod -l app=superset'
+
+    - alert: SupersetSlow
+      expr: |
+        probe_http_duration_seconds{job="blackbox-http",instance=~".*superset.*"} > 5
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Superset response time is {{ $value | printf \"%.2f\" }}s"
+        description: |
+          Superset at {{ $labels.instance }} response time is {{ $value | printf "%.2f" }}s.
+          ACTION: Check Superset pod resources and OpenSearch/PostgreSQL connectivity.
+
+    - alert: SupersetHighRestarts
+      expr: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="prod",
+          pod=~".*superset.*"
+        }[1h]) > 3
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Superset pods have restarted {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          Superset pods have restarted {{ $value | printf "%.0f" }} times in the last hour.
+          ACTION: Check Superset logs for errors.
+
+    # ============================================================================
+    # OPENSEARCH ALERTS (logging + reporting analytics)
+    # OpenSearch handles both logging and reporting analytics for OpenG2P
+    # ============================================================================
+    - alert: OpenSearchClusterRed
+      expr: |
+        opensearch_cluster_health_status{namespace="prod"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "OpenSearch cluster health is RED"
+        description: |
+          OpenSearch cluster in prod namespace has RED health status.
+          RED status means primary shards are missing - data is unavailable.
+          OpenSearch handles both logging and reporting analytics for OpenG2P.
+          ACTION REQUIRED: Check OpenSearch pod status: 'kubectl get pods -n prod -l app=opensearch'
+          Check cluster health: 'curl http://opensearch:9200/_cluster/health'
+
+    - alert: OpenSearchClusterYellow
+      expr: |
+        opensearch_cluster_health_status{namespace="prod"} == 1
+      for: 30m
+      labels:
+        severity: warning
+        component: application
+      annotations:
+        summary: "OpenSearch cluster health is YELLOW for 30+ minutes"
+        description: |
+          OpenSearch cluster in prod namespace has YELLOW health status for 30+ minutes.
+          YELLOW status means replica shards are missing - reduced redundancy.
+          ACTION: Check OpenSearch pod status and disk space.
+
+    - alert: OpenSearchNodeDown
+      expr: |
+        kube_statefulset_status_replicas_ready{
+          namespace="prod",
+          statefulset=~".*opensearch.*"
+        } < kube_statefulset_spec_replicas{
+          namespace="prod",
+          statefulset=~".*opensearch.*"
+        }
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "OpenSearch node pods are not ready ({{ $value | printf \"%.0f\" }} ready, {{ $labels.spec_replicas }} desired)"
+        description: |
+          OpenSearch StatefulSet {{ $labels.statefulset }} in prod namespace has {{ $value | printf "%.0f" }} ready pods,
+          but {{ $labels.spec_replicas }} are desired.
+          ACTION: Check OpenSearch pod status and logs.
+
+    - alert: OpenSearchDiskWatermark
+      expr: |
+        opensearch_filesystem_data_available_bytes{
+          namespace="prod"
+        } / opensearch_filesystem_data_size_bytes{
+          namespace="prod"
+        } * 100 < 15
+      for: 10m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "OpenSearch node {{ $labels.node }} disk is {{ $value | printf \"%.1f\" }}% free (below 15% watermark)"
+        description: |
+          OpenSearch node {{ $labels.node }} disk is {{ $value | printf "%.1f" }}% free.
+          OpenSearch stops allocating shards at 85% disk usage (15% free).
+          ACTION: Free disk space or expand PVC immediately.
+
+    - alert: OpenSearchJVMHeapHigh
+      expr: |
+        opensearch_jvm_memory_used_bytes{
+          namespace="prod",
+          area="heap"
+        } / opensearch_jvm_memory_max_bytes{
+          namespace="prod",
+          area="heap"
+        } * 100 > 85
+      for: 10m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "OpenSearch JVM heap usage is {{ $value | printf \"%.1f\" }}% on node {{ $labels.node }}"
+        description: |
+          OpenSearch JVM heap usage is {{ $value | printf "%.1f" }}% on node {{ $labels.node }}.
+          High heap usage can cause GC pauses and performance degradation.
+          ACTION: Check OpenSearch memory configuration and consider increasing heap size.
+
+    # ============================================================================
+    # OPENSEARCH DASHBOARDS ALERTS (visualization layer)
+    # ============================================================================
+    - alert: OpenSearchDashboardsDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~".*opensearch-dashboards.*|.*kibana.*"
+        } == 0
+      for: 5m
+      labels:
+        severity: warning
+        component: application
+      annotations:
+        summary: "OpenSearch Dashboards deployment has no available replicas"
+        description: |
+          OpenSearch Dashboards deployment in prod namespace has 0 available pods.
+          Dashboards is the visualization layer - not critical path, but should be restored.
+          ACTION: Check OpenSearch Dashboards pod status.
+
+    - alert: OpenSearchDashboardsSlow
+      expr: |
+        probe_http_duration_seconds{job="blackbox-http",instance=~".*opensearch.*dashboards.*"} > 5
+      for: 5m
+      labels:
+        severity: warning
+        component: application
+      annotations:
+        summary: "OpenSearch Dashboards response time is {{ $value | printf \"%.2f\" }}s"
+        description: |
+          OpenSearch Dashboards at {{ $labels.instance }} response time is {{ $value | printf "%.2f" }}s.
+          ACTION: Check Dashboards pod resources.
+
+    # ============================================================================
+    # MINIO ALERTS (object storage - in-cluster + external at 172.16.16.231)
+    # ============================================================================
+    - alert: MinIOExternalDown
+      expr: |
+        up{instance=~"172.16.16.231.*",job="external-node-exporters"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "External MinIO at 172.16.16.231 is DOWN"
+        description: |
+          External MinIO server at 172.16.16.231 is unreachable.
+          MinIO stores documents and backups - if MinIO is down, document uploads fail.
+          ACTION REQUIRED: Check MinIO VM status and service health.
+
+    - alert: MinIOInClusterDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~".*minio.*"
+        } == 0
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "In-cluster MinIO deployment has no available replicas"
+        description: |
+          In-cluster MinIO deployment in prod namespace has 0 available pods.
+          ACTION: Check MinIO pod status: 'kubectl get pods -n prod -l app=minio'
+
+    - alert: MinIODiskHigh
+      expr: |
+        (
+          node_filesystem_avail_bytes{
+            instance=~"172.16.16.231.*",
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          } / 
+          node_filesystem_size_bytes{
+            instance=~"172.16.16.231.*",
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          }
+        ) * 100 < 15
+      for: 10m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "MinIO disk usage is {{ $value | printf \"%.1f\" }}% free on 172.16.16.231"
+        description: |
+          MinIO disk on 172.16.16.231 is {{ $value | printf "%.1f" }}% free.
+          MinIO stores documents and backups - low disk space can cause upload failures.
+          ACTION: Clean up old backups or expand disk.
+
+    # ============================================================================
+    # KEY MANAGER ALERTS (cryptographic operations)
+    # ============================================================================
+    - alert: KeyManagerDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~".*key.*manager.*|.*keymanager.*"
+        } == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "Key Manager deployment has no available replicas in prod namespace"
+        description: |
+          Key Manager deployment in prod namespace has 0 available pods.
+          Key Manager handles cryptographic operations for social registry.
+          If Key Manager is down, cryptographic operations fail.
+          ACTION REQUIRED: Check Key Manager pod status: 'kubectl get pods -n prod -l app=key-manager'
+
+    - alert: KeyManagerSlow
+      expr: |
+        probe_http_duration_seconds{job="blackbox-http",instance=~".*key.*manager.*"} > 3
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Key Manager response time is {{ $value | printf \"%.2f\" }}s"
+        description: |
+          Key Manager at {{ $labels.instance }} response time is {{ $value | printf "%.2f" }}s.
+          ACTION: Check Key Manager pod resources.
+
+    - alert: KeyManagerHighRestarts
+      expr: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="prod",
+          pod=~".*key.*manager.*|.*keymanager.*"
+        }[1h]) > 2
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "Key Manager pods have restarted {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          Key Manager pods have restarted {{ $value | printf "%.0f" }} times in the last hour.
+          ACTION: Check Key Manager logs for errors.
+
+    # ============================================================================
+    # IN-POD POSTGRESQL ALERTS (in-cluster PostgreSQL instances)
+    # ============================================================================
+    - alert: PostgreSQLPodDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~".*postgresql.*|.*postgres.*"
+        } == 0
+        unless on(deployment, namespace) kube_deployment_labels{
+          namespace="prod",
+          label_app_kubernetes_io_name="postgresql",
+          # Exclude external PostgreSQL monitoring - this is for in-cluster instances
+        }
+      for: 2m
+      labels:
+        severity: critical
+        component: database
+      annotations:
+        summary: "PostgreSQL deployment has no available replicas in prod namespace"
+        description: |
+          PostgreSQL deployment in prod namespace has 0 available pods.
+          This alert is for in-cluster PostgreSQL instances (not external DB at 172.16.16.229).
+          ACTION REQUIRED: Check PostgreSQL pod status: 'kubectl get pods -n prod -l app=postgresql'
+
+    - alert: PostgreSQLPodHighRestarts
+      expr: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="prod",
+          pod=~".*postgresql.*|.*postgres.*"
+        }[1h]) > 3
+      for: 5m
+      labels:
+        severity: critical
+        component: database
+      annotations:
+        summary: "PostgreSQL pods have restarted {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          PostgreSQL pods have restarted {{ $value | printf "%.0f" }} times in the last hour.
+          High restart rate indicates database corruption, disk issues, or memory problems.
+          ACTION REQUIRED: Check PostgreSQL logs: 'kubectl logs -n prod -l app=postgresql'

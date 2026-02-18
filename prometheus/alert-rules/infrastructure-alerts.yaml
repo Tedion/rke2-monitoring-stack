@@ -11,75 +11,340 @@ spec:
   - name: infrastructure
     interval: 30s
     rules:
-    # CPU Alerts
-    - alert: HighCPUUsage
-      expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
-      for: 5m
-      labels:
-        severity: high
-        component: infrastructure
-      annotations:
-        summary: "High CPU usage on {{ $labels.instance }}"
-        description: "CPU usage is above 85% for more than 5 minutes on {{ $labels.instance }}"
-        
-    - alert: CriticalCPUUsage
-      expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+    # ============================================================================
+    # VM DOWN DETECTION - MOST CRITICAL (currently missing entirely)
+    # This single rule would have caught the DB VM going down
+    # ============================================================================
+    - alert: NodeExporterDown
+      expr: up{job="external-node-exporters"} == 0
       for: 2m
       labels:
         severity: critical
         component: infrastructure
       annotations:
-        summary: "Critical CPU usage on {{ $labels.instance }}"
-        description: "CPU usage is above 95% for more than 2 minutes on {{ $labels.instance }}"
+        summary: "Node exporter unreachable on {{ $labels.instance }}, host may be DOWN"
+        description: |
+          Node exporter on {{ $labels.instance }} has been unreachable for 2 minutes.
+          This indicates the host may be DOWN or the node_exporter service has crashed.
+          ACTION REQUIRED: Check host status, SSH connectivity, and node_exporter service.
+          Affected VM: {{ $labels.instance }}
 
-    # Memory Alerts
-    - alert: HighMemoryUsage
-      expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
-      for: 5m
-      labels:
-        severity: high
-        component: infrastructure
-      annotations:
-        summary: "High memory usage on {{ $labels.instance }}"
-        description: "Memory usage is above 85% on {{ $labels.instance }}"
-        
-    - alert: CriticalMemoryUsage
-      expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
-      for: 2m
-      labels:
-        severity: critical
-        component: infrastructure
-      annotations:
-        summary: "Critical memory usage on {{ $labels.instance }}"
-        description: "Memory usage is above 95% on {{ $labels.instance }}"
-
-    # Disk Alerts
+    # ============================================================================
+    # DISK ALERTS - THE CRITICAL FIX
+    # Filter by real filesystems (ext4/xfs/btrfs) and exclude system mounts
+    # ============================================================================
     - alert: DiskSpaceLow
-      expr: (node_filesystem_avail_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"} / node_filesystem_size_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"}) * 100 < 20
+      expr: |
+        (
+          node_filesystem_avail_bytes{
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          } / 
+          node_filesystem_size_bytes{
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          }
+        ) * 100 < 20
+      for: 10m
+      labels:
+        severity: warning
+        component: infrastructure
+      annotations:
+        summary: "Low disk space on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}% free)"
+        description: |
+          Disk space is below 20% free on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}.
+          Current free space: {{ $value | printf "%.1f" }}%
+          ACTION: Review and clean up unnecessary files, check log rotation, consider expanding disk.
+
+    - alert: DiskSpaceHigh
+      expr: |
+        (
+          node_filesystem_avail_bytes{
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          } / 
+          node_filesystem_size_bytes{
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          }
+        ) * 100 < 10
+      for: 2m
+      labels:
+        severity: critical
+        component: infrastructure
+      annotations:
+        summary: "Critical disk space on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}% free)"
+        description: |
+          Disk space is below 10% free on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}.
+          Current free space: {{ $value | printf "%.1f" }}%
+          ACTION REQUIRED: Immediately free up space or expand disk. Services may fail if disk fills completely.
+
+    - alert: DiskSpaceExhausted
+      expr: |
+        (
+          node_filesystem_avail_bytes{
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          } / 
+          node_filesystem_size_bytes{
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          }
+        ) * 100 < 5
+      for: 0m
+      labels:
+        severity: critical
+        component: infrastructure
+      annotations:
+        summary: "EMERGENCY: Disk space exhausted on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}% free)"
+        description: |
+          EMERGENCY: Disk space is below 5% free on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}.
+          Current free space: {{ $value | printf "%.1f" }}%
+          IMMEDIATE ACTION REQUIRED: Services will fail, database corruption possible. Free space immediately.
+
+    # Predictive disk alert - alert BEFORE disk fills
+    - alert: DiskSpaceWillFill
+      expr: |
+        predict_linear(
+          node_filesystem_avail_bytes{
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          }[6h],
+          4 * 3600
+        ) < 0
+      for: 5m
+      labels:
+        severity: high
+        component: infrastructure
+      annotations:
+        summary: "Disk on {{ $labels.instance }} predicted to fill within 4 hours"
+        description: |
+          Based on 6-hour trend, disk on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}
+          is predicted to fill completely within 4 hours.
+          ACTION: Investigate disk usage growth and free space proactively.
+
+    # DB VM specific stricter thresholds (disk full = data corruption)
+    - alert: DatabaseDiskSpaceHigh
+      expr: |
+        (
+          node_filesystem_avail_bytes{
+            instance=~"172.16.16.229.*",
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          } / 
+          node_filesystem_size_bytes{
+            instance=~"172.16.16.229.*",
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          }
+        ) * 100 < 25
+      for: 5m
+      labels:
+        severity: high
+        component: database
+      annotations:
+        summary: "Database VM disk space below 25% ({{ $value | printf \"%.1f\" }}% free)"
+        description: |
+          Database VM (172.16.16.229) disk space is below 25% free on mountpoint {{ $labels.mountpoint }}.
+          Current free space: {{ $value | printf "%.1f" }}%
+          ACTION: Review PostgreSQL WAL files, run VACUUM FULL if needed, check for old pg_dump files.
+          Database disk full can cause data corruption and transaction failures.
+
+    - alert: DatabaseDiskSpaceCritical
+      expr: |
+        (
+          node_filesystem_avail_bytes{
+            instance=~"172.16.16.229.*",
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          } / 
+          node_filesystem_size_bytes{
+            instance=~"172.16.16.229.*",
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          }
+        ) * 100 < 15
+      for: 2m
+      labels:
+        severity: critical
+        component: database
+      annotations:
+        summary: "CRITICAL: Database VM disk space below 15% ({{ $value | printf \"%.1f\" }}% free)"
+        description: |
+          CRITICAL: Database VM (172.16.16.229) disk space is below 15% free on mountpoint {{ $labels.mountpoint }}.
+          Current free space: {{ $value | printf "%.1f" }}%
+          IMMEDIATE ACTION REQUIRED:
+          - Clean up PostgreSQL WAL files: SELECT pg_switch_wal(); then archive old WALs
+          - Run VACUUM FULL on large tables if safe
+          - Remove old pg_dump files
+          - Consider expanding disk immediately
+          Database disk full will cause PostgreSQL to crash and potential data corruption.
+
+    # ============================================================================
+    # INODE ALERTS
+    # ============================================================================
+    - alert: InodeSpaceLow
+      expr: |
+        (
+          node_filesystem_files_free{
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          } / 
+          node_filesystem_files{
+            fstype=~"ext4|xfs|btrfs",
+            mountpoint!~"/boot.*|/snap.*|/run.*"
+          }
+        ) * 100 < 10
+      for: 10m
+      labels:
+        severity: high
+        component: infrastructure
+      annotations:
+        summary: "Low inode space on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}% free)"
+        description: |
+          Inode space is below 10% free on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}.
+          Current free inodes: {{ $value | printf "%.1f" }}%
+          ACTION: Clean up small files, check for orphaned files, consider increasing inode count on filesystem.
+
+    # ============================================================================
+    # CPU ALERTS
+    # ============================================================================
+    - alert: HighCPUUsage
+      expr: |
+        100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+      for: 10m
+      labels:
+        severity: high
+        component: infrastructure
+      annotations:
+        summary: "High CPU usage on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}%)"
+        description: |
+          CPU usage is above 85% for more than 10 minutes on {{ $labels.instance }}.
+          Current CPU usage: {{ $value | printf "%.1f" }}%
+          ACTION: Investigate high CPU processes, check for runaway processes, consider scaling resources.
+
+    - alert: CriticalCPUUsage
+      expr: |
+        100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+      for: 5m
+      labels:
+        severity: critical
+        component: infrastructure
+      annotations:
+        summary: "Critical CPU usage on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}%)"
+        description: |
+          CPU usage is above 95% for more than 5 minutes on {{ $labels.instance }}.
+          Current CPU usage: {{ $value | printf "%.1f" }}%
+          ACTION REQUIRED: Immediately investigate and kill runaway processes. System may become unresponsive.
+
+    # ============================================================================
+    # MEMORY ALERTS
+    # ============================================================================
+    - alert: HighMemoryUsage
+      expr: |
+        (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+      for: 10m
+      labels:
+        severity: high
+        component: infrastructure
+      annotations:
+        summary: "High memory usage on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}%)"
+        description: |
+          Memory usage is above 85% for more than 10 minutes on {{ $labels.instance }}.
+          Current memory usage: {{ $value | printf "%.1f" }}%
+          Available memory: {{ $labels.instance }}
+          ACTION: Investigate memory-consuming processes, check for memory leaks, consider adding memory.
+
+    - alert: CriticalMemoryUsage
+      expr: |
+        (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+      for: 2m
+      labels:
+        severity: critical
+        component: infrastructure
+      annotations:
+        summary: "Critical memory usage on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}%)"
+        description: |
+          Memory usage is above 95% for more than 2 minutes on {{ $labels.instance }}.
+          Current memory usage: {{ $value | printf "%.1f" }}%
+          ACTION REQUIRED: System may start swapping heavily or OOM kill processes. Investigate immediately.
+
+    # ============================================================================
+    # NETWORK ALERTS
+    # ============================================================================
+    - alert: NetworkInterfaceErrors
+      expr: |
+        rate(node_network_receive_errs_total{device!~"lo|veth.*|cali.*|flannel.*"}[5m]) > 0.01
+        or
+        rate(node_network_transmit_errs_total{device!~"lo|veth.*|cali.*|flannel.*"}[5m]) > 0.01
       for: 5m
       labels:
         severity: warning
         component: infrastructure
       annotations:
-        summary: "Low disk space on {{ $labels.instance }}"
-        description: "Disk space is below 20% on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}"
-        
-    - alert: DiskSpaceCritical
-      expr: (node_filesystem_avail_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"} / node_filesystem_size_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"}) * 100 < 10
+        summary: "Network interface errors on {{ $labels.instance }} interface {{ $labels.device }}"
+        description: |
+          Network interface {{ $labels.device }} on {{ $labels.instance }} is experiencing errors.
+          Receive errors: {{ $value | printf "%.2f" }}/s
+          ACTION: Check network cable, switch port, driver issues, or hardware problems.
+
+    # ============================================================================
+    # NFS ALERTS
+    # ============================================================================
+    - alert: NFSMountReadOnly
+      expr: |
+        node_filesystem_readonly{fstype=~"nfs4?"} == 1
       for: 2m
       labels:
         severity: critical
         component: infrastructure
       annotations:
-        summary: "Critical disk space on {{ $labels.instance }}"
-        description: "Disk space is below 10% on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}"
-        
-    - alert: DiskSpaceExhausted
-      expr: (node_filesystem_avail_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"} / node_filesystem_size_bytes{mountpoint!~"/boot.*|/tmp.*|/run.*"}) * 100 < 5
-      for: 1m
+        summary: "NFS mount is read-only on {{ $labels.instance }}"
+        description: |
+          NFS mountpoint {{ $labels.mountpoint }} on {{ $labels.instance }} is read-only.
+          This indicates a stale mount or NFS server connectivity issue.
+          ACTION REQUIRED: Unmount and remount NFS share, check NFS server connectivity.
+
+    # ============================================================================
+    # HOST-LEVEL ALERTS
+    # ============================================================================
+    - alert: SystemdServiceFailed
+      expr: |
+        node_systemd_unit_state{state="failed"} == 1
+      for: 5m
       labels:
-        severity: critical
+        severity: high
         component: infrastructure
       annotations:
-        summary: "Disk space exhausted on {{ $labels.instance }}"
-        description: "Disk space is below 5% on {{ $labels.instance }} mountpoint {{ $labels.mountpoint }}"
+        summary: "Systemd service {{ $labels.name }} failed on {{ $labels.instance }}"
+        description: |
+          Systemd service {{ $labels.name }} is in failed state on {{ $labels.instance }}.
+          ACTION: Check service logs with 'journalctl -u {{ $labels.name }}', restart service if needed.
+
+    - alert: HighSwapUsage
+      expr: |
+        (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes * 100 > 80
+      for: 10m
+      labels:
+        severity: warning
+        component: infrastructure
+      annotations:
+        summary: "High swap usage on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}%)"
+        description: |
+          Swap usage is above 80% on {{ $labels.instance }}.
+          Current swap usage: {{ $value | printf "%.1f" }}%
+          ACTION: High swap usage indicates memory pressure. Investigate memory-consuming processes.
+
+    - alert: ClockSkewDetected
+      expr: |
+        abs(node_timex_offset_seconds) > 0.05
+      for: 10m
+      labels:
+        severity: warning
+        component: infrastructure
+      annotations:
+        summary: "Clock skew detected on {{ $labels.instance }} ({{ $value | printf \"%.3f\" }}s)"
+        description: |
+          Clock skew of {{ $value | printf "%.3f" }}s detected on {{ $labels.instance }}.
+          Clock skew > 50ms can cause TLS certificate validation failures and authentication issues.
+          ACTION: Sync system clock with NTP: 'sudo chrony sources' or 'sudo ntpdate -s pool.ntp.org'

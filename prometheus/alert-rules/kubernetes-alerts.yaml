@@ -11,95 +11,271 @@ spec:
   - name: kubernetes
     interval: 30s
     rules:
-    # Pod Failure Alerts
+    # ============================================================================
+    # POD ALERTS - Fixed noisy alerts
+    # ============================================================================
+    # Fixed: Changed from rate() > 0 to increase() > 5 over 1h to reduce noise
     - alert: PodCrashLooping
-      expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+      expr: |
+        increase(kube_pod_container_status_restarts_total[1h]) > 5
       for: 5m
       labels:
         severity: critical
         component: kubernetes
       annotations:
         summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
-        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is crash looping"
-        
+        description: |
+          Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted more than 5 times in the last hour.
+          Current restart count: {{ $value | printf "%.0f" }}
+          ACTION REQUIRED: Check pod logs: 'kubectl logs {{ $labels.pod }} -n {{ $labels.namespace }}'
+          Investigate application errors, resource limits, or configuration issues.
+
+    # Fixed: Only match Pending|Unknown phases, exclude Jobs
     - alert: PodNotReady
-      expr: kube_pod_status_phase{phase!="Running",phase!="Succeeded"} == 1
+      expr: |
+        kube_pod_status_phase{phase=~"Pending|Unknown"} == 1
+        unless on(pod, namespace) kube_pod_owner{owner_kind="Job"}
       for: 10m
       labels:
         severity: high
         component: kubernetes
       annotations:
-        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is not ready"
-        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been in {{ $labels.phase }} state for more than 10 minutes"
-        
+        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is not ready ({{ $labels.phase }})"
+        description: |
+          Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been in {{ $labels.phase }} state for more than 10 minutes.
+          ACTION: Check pod events: 'kubectl describe pod {{ $labels.pod }} -n {{ $labels.namespace }}'
+          Investigate resource constraints, image pull issues, or node problems.
+
+    # Fixed: Exclude Jobs from PodFailed alerts
     - alert: PodFailed
-      expr: kube_pod_status_phase{phase="Failed"} == 1
+      expr: |
+        kube_pod_status_phase{phase="Failed"} == 1
+        unless on(pod, namespace) kube_pod_owner{owner_kind="Job"}
       for: 2m
       labels:
         severity: critical
         component: kubernetes
       annotations:
         summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has failed"
-        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is in Failed state"
+        description: |
+          Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is in Failed state.
+          ACTION REQUIRED: Check pod logs and events: 'kubectl logs {{ $labels.pod }} -n {{ $labels.namespace }}'
+          Investigate application crashes, OOM kills, or container errors.
 
-    # Node Alerts
+    # ============================================================================
+    # MISSING CRITICAL ALERTS - Added
+    # ============================================================================
+    - alert: ContainerOOMKilled
+      expr: |
+        kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+      for: 0m
+      labels:
+        severity: critical
+        component: kubernetes
+      annotations:
+        summary: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} was OOM killed"
+        description: |
+          Container {{ $labels.container }} in pod {{ $labels.pod }} (namespace {{ $labels.namespace }}) was killed due to out-of-memory.
+          ACTION REQUIRED: Increase memory limits or fix memory leak. Check memory usage patterns and adjust resources.
+
+    - alert: ContainerWaiting
+      expr: |
+        kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull|CrashLoopBackOff|CreateContainerConfigError"} == 1
+      for: 10m
+      labels:
+        severity: high
+        component: kubernetes
+      annotations:
+        summary: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} is waiting ({{ $labels.reason }})"
+        description: |
+          Container {{ $labels.container }} in pod {{ $labels.pod }} (namespace {{ $labels.namespace }}) has been waiting for 10 minutes.
+          Reason: {{ $labels.reason }}
+          ACTION: Check image availability, registry credentials, or container configuration.
+          For ImagePullBackOff: Verify image exists and credentials are correct.
+
+    - alert: PVCUsageHigh
+      expr: |
+        (
+          kubelet_volume_stats_used_bytes{persistentvolumeclaim!=""} / 
+          kubelet_volume_stats_capacity_bytes{persistentvolumeclaim!=""}
+        ) * 100 > 85
+      for: 10m
+      labels:
+        severity: high
+        component: kubernetes
+      annotations:
+        summary: "PVC {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} usage is {{ $value | printf \"%.1f\" }}%"
+        description: |
+          PersistentVolumeClaim {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} is {{ $value | printf "%.1f" }}% full.
+          ACTION: Clean up data, expand PVC, or create new PVC and migrate data.
+
+    - alert: PVCUsageCritical
+      expr: |
+        (
+          kubelet_volume_stats_used_bytes{persistentvolumeclaim!=""} / 
+          kubelet_volume_stats_capacity_bytes{persistentvolumeclaim!=""}
+        ) * 100 > 95
+      for: 5m
+      labels:
+        severity: critical
+        component: kubernetes
+      annotations:
+        summary: "CRITICAL: PVC {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} usage is {{ $value | printf \"%.1f\" }}%"
+        description: |
+          PersistentVolumeClaim {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} is {{ $value | printf "%.1f" }}% full.
+          ACTION REQUIRED: Immediately free space or expand PVC. Pods may fail if PVC fills completely.
+
+    - alert: PVCInodeUsageHigh
+      expr: |
+        (
+          kubelet_volume_stats_inodes_free{persistentvolumeclaim!=""} / 
+          kubelet_volume_stats_inodes{persistentvolumeclaim!=""}
+        ) * 100 < 10
+      for: 10m
+      labels:
+        severity: high
+        component: kubernetes
+      annotations:
+        summary: "PVC {{ $labels.persistentvolumeclaim }} inode usage is {{ $value | printf \"%.1f\" }}% free"
+        description: |
+          PersistentVolumeClaim {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} has less than 10% free inodes.
+          ACTION: Clean up small files, check for orphaned files, consider expanding PVC.
+
+    - alert: DeploymentReplicasMismatch
+      expr: |
+        kube_deployment_spec_replicas != kube_deployment_status_replicas_available
+      for: 15m
+      labels:
+        severity: high
+        component: kubernetes
+      annotations:
+        summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} replicas mismatch"
+        description: |
+          Deployment {{ $labels.deployment }} in namespace {{ $labels.namespace }} has {{ $value | printf "%.0f" }} available replicas,
+          but {{ $labels.spec_replicas }} replicas are desired.
+          ACTION: Check deployment events and pod status: 'kubectl describe deployment {{ $labels.deployment }} -n {{ $labels.namespace }}'
+
+    - alert: StatefulSetReplicasMismatch
+      expr: |
+        kube_statefulset_spec_replicas != kube_statefulset_status_replicas_ready
+      for: 15m
+      labels:
+        severity: high
+        component: kubernetes
+      annotations:
+        summary: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} replicas mismatch"
+        description: |
+          StatefulSet {{ $labels.statefulset }} in namespace {{ $labels.namespace }} has {{ $value | printf "%.0f" }} ready replicas,
+          but {{ $labels.spec_replicas }} replicas are desired.
+          ACTION: Check StatefulSet events and pod status: 'kubectl describe statefulset {{ $labels.statefulset }} -n {{ $labels.namespace }}'
+
+    - alert: NodeUnreachable
+      expr: |
+        kube_node_spec_taint{key="node.kubernetes.io/unreachable"} == 1
+      for: 2m
+      labels:
+        severity: critical
+        component: kubernetes
+      annotations:
+        summary: "Node {{ $labels.node }} is unreachable"
+        description: |
+          Node {{ $labels.node }} has been marked as unreachable for 2 minutes.
+          ACTION REQUIRED: Check node status, network connectivity, and kubelet service.
+          Pods on this node may be rescheduled to other nodes.
+
+    # ============================================================================
+    # NODE ALERTS
+    # ============================================================================
     - alert: NodeNotReady
-      expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+      expr: |
+        kube_node_status_condition{condition="Ready",status="true"} == 0
       for: 5m
       labels:
         severity: critical
         component: kubernetes
       annotations:
         summary: "Node {{ $labels.node }} is not ready"
-        description: "Node {{ $labels.node }} has been not ready for more than 5 minutes"
-        
+        description: |
+          Node {{ $labels.node }} has been not ready for more than 5 minutes.
+          ACTION REQUIRED: Check node status: 'kubectl describe node {{ $labels.node }}'
+          Investigate kubelet, container runtime, or network issues.
+
     - alert: NodeMemoryPressure
-      expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+      expr: |
+        kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
       for: 5m
       labels:
         severity: high
         component: kubernetes
       annotations:
         summary: "Node {{ $labels.node }} has memory pressure"
-        description: "Node {{ $labels.node }} is experiencing memory pressure"
-        
+        description: |
+          Node {{ $labels.node }} is experiencing memory pressure.
+          ACTION: Check memory usage, consider evicting low-priority pods or adding memory to node.
+
+    # Fixed: Changed severity from high to critical (pods WILL be evicted)
     - alert: NodeDiskPressure
-      expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+      expr: |
+        kube_node_status_condition{condition="DiskPressure",status="true"} == 1
       for: 5m
       labels:
-        severity: high
+        severity: critical
         component: kubernetes
       annotations:
-        summary: "Node {{ $labels.node }} has disk pressure"
-        description: "Node {{ $labels.node }} is experiencing disk pressure"
-        
+        summary: "CRITICAL: Node {{ $labels.node }} has disk pressure"
+        description: |
+          Node {{ $labels.node }} is experiencing disk pressure. Pods WILL be evicted.
+          ACTION REQUIRED: Free disk space immediately or pods will be evicted.
+          Check disk usage: 'kubectl top node {{ $labels.node }}' and 'df -h' on the node.
+
     - alert: NodeCPUPressure
-      expr: kube_node_status_condition{condition="PIDPressure",status="true"} == 1
+      expr: |
+        kube_node_status_condition{condition="PIDPressure",status="true"} == 1
       for: 5m
       labels:
         severity: warning
         component: kubernetes
       annotations:
         summary: "Node {{ $labels.node }} has PID pressure"
-        description: "Node {{ $labels.node }} is experiencing PID pressure"
+        description: |
+          Node {{ $labels.node }} is experiencing PID pressure.
+          ACTION: Check for processes leaking PIDs, consider increasing kernel.pid_max.
 
-    # Resource Usage Alerts
+    # ============================================================================
+    # RESOURCE USAGE ALERTS - Fixed deprecated metrics
+    # ============================================================================
+    # Fixed: Replaced container_spec_memory_limit_bytes with kube_pod_container_resource_limits
     - alert: PodHighMemoryUsage
-      expr: (sum(container_memory_working_set_bytes{container!="POD",container!=""}) by (pod, namespace) / sum(container_spec_memory_limit_bytes{container!="POD",container!=""}) by (pod, namespace)) * 100 > 90
+      expr: |
+        (
+          sum(container_memory_working_set_bytes{container!="POD",container!=""}) by (pod, namespace) / 
+          sum(kube_pod_container_resource_limits{resource="memory",container!="POD",container!=""}) by (pod, namespace)
+        ) * 100 > 90
       for: 5m
       labels:
         severity: high
         component: kubernetes
       annotations:
-        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has high memory usage"
-        description: "Pod {{ $labels.pod }} is using more than 90% of its memory limit"
-        
+        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has high memory usage ({{ $value | printf \"%.1f\" }}%)"
+        description: |
+          Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is using more than 90% of its memory limit.
+          Current usage: {{ $value | printf "%.1f" }}%
+          ACTION: Check for memory leaks, optimize application, or increase memory limits.
+
+    # Fixed: Replaced container_spec_cpu_quota/period with kube_pod_container_resource_limits
     - alert: PodHighCPUUsage
-      expr: (sum(rate(container_cpu_usage_seconds_total{container!="POD",container!=""}[5m])) by (pod, namespace) / sum(container_spec_cpu_quota{container!="POD",container!=""}/container_spec_cpu_period{container!="POD",container!=""}) by (pod, namespace)) * 100 > 90
+      expr: |
+        (
+          sum(rate(container_cpu_usage_seconds_total{container!="POD",container!=""}[5m])) by (pod, namespace) / 
+          sum(kube_pod_container_resource_limits{resource="cpu",container!="POD",container!=""}) by (pod, namespace)
+        ) * 100 > 90
       for: 5m
       labels:
         severity: high
         component: kubernetes
       annotations:
-        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has high CPU usage"
-        description: "Pod {{ $labels.pod }} is using more than 90% of its CPU limit"
+        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has high CPU usage ({{ $value | printf \"%.1f\" }}%)"
+        description: |
+          Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is using more than 90% of its CPU limit.
+          Current usage: {{ $value | printf "%.1f" }}%
+          ACTION: Optimize application performance, check for CPU-intensive operations, or increase CPU limits.

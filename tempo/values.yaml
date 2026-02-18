@@ -1,0 +1,88 @@
+# Grafana Tempo Helm Values
+# Single-binary deployment mode (sufficient for our scale)
+
+tempo:
+  # Single binary mode - simpler deployment, sufficient for our scale
+  # For larger deployments, consider microservices mode
+  mode: singleBinary
+  
+  # Storage backend: local filesystem with PVC
+  storage:
+    trace:
+      backend: local
+      local:
+        path: /var/tempo/traces
+  
+  # Storage configuration
+  storageSize: 50Gi
+  storageClassName: nfs-csi
+  
+  # Retention: 72 hours (3 days of traces)
+  # Note: retention format may vary by chart version - using server config instead
+  server:
+    http_listen_port: 3100
+    log_level: info
+    storage:
+      trace:
+        retention: 72h
+  
+  # Enable metrics generator to create span metrics in Prometheus
+  metricsGenerator:
+    enabled: true
+    replicas: 1
+    # Generate metrics from traces
+    registry:
+      externalLabels:
+        source: tempo
+        cluster: rke2-production
+  
+  # OTLP receivers (OpenTelemetry Protocol)
+  otlp:
+    grpc:
+      enabled: true
+      port: 4317
+    http:
+      enabled: true
+      port: 4318
+  
+  # Resource limits
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 3100  # Tempo query frontend port
+  
+  # Query frontend (for Grafana queries)
+  queryFrontend:
+    enabled: true
+    replicas: 1
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 200m
+        memory: 256Mi
+  
+  # Ingester (receives traces)
+  ingester:
+    replicas: 1
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 200m
+        memory: 256Mi
+
+# ServiceMonitor for Prometheus to scrape Tempo metrics
+serviceMonitor:
+  enabled: true
+  interval: 30s

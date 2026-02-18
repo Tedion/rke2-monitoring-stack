@@ -1,0 +1,169 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: database-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: database
+    interval: 30s
+    rules:
+    # ============================================================================
+    # IMPORTANT NOTE
+    # The "PostgreSQLDown" alerts you received in your inbox were for an internal
+    # PostgreSQL exporter at 10.42.2.221:9187, NOT your actual production database
+    # at 172.16.16.229. This alert rule file monitors the REAL database.
+    # ============================================================================
+
+    # ============================================================================
+    # DATABASE AVAILABILITY ALERTS
+    # ============================================================================
+    - alert: PostgreSQLDown
+      expr: |
+        up{job="external-postgresql"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: database
+      annotations:
+        summary: "PostgreSQL database on {{ $labels.instance }} is DOWN"
+        description: |
+          PostgreSQL exporter on {{ $labels.instance }} (172.16.16.229) is unreachable for 1 minute.
+          This indicates the database may be DOWN or the postgres_exporter service has crashed.
+          ACTION REQUIRED: 
+          - Check PostgreSQL service status: 'sudo systemctl status postgresql'
+          - Check PostgreSQL logs: 'sudo journalctl -u postgresql -n 100'
+          - Verify database connectivity: 'psql -h 172.16.16.229 -U postgres -c "SELECT 1"'
+          - Check if disk is full (common cause of PostgreSQL crashes)
+
+    - alert: PostgreSQLTCPDown
+      expr: |
+        probe_success{job="tcp-probe-postgresql"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: database
+      annotations:
+        summary: "PostgreSQL TCP port 5432 on {{ $labels.instance }} is unreachable"
+        description: |
+          PostgreSQL TCP port 5432 on {{ $labels.instance }} (172.16.16.229) is unreachable.
+          This is a backup check - if PostgreSQLDown also fires, the database is definitely down.
+          ACTION REQUIRED: Check network connectivity, firewall rules, and PostgreSQL service status.
+
+    # ============================================================================
+    # DATABASE PERFORMANCE ALERTS
+    # ============================================================================
+    - alert: PostgreSQLConnectionUsageHigh
+      expr: |
+        (
+          pg_stat_database_numbackends{datname!~"template.*|postgres"} / 
+          pg_settings_max_connections{setting="max_connections"}
+        ) * 100 > 80
+      for: 10m
+      labels:
+        severity: high
+        component: database
+      annotations:
+        summary: "PostgreSQL connection usage is {{ $value | printf \"%.1f\" }}% on {{ $labels.instance }}"
+        description: |
+          PostgreSQL database on {{ $labels.instance }} is using {{ $value | printf "%.1f" }}% of max connections.
+          Current connections: {{ $labels.numbackends }}, Max: {{ $labels.max_connections }}
+          ACTION: Review connection pooling settings, check for connection leaks, consider increasing max_connections.
+
+    - alert: PostgreSQLLongRunningTransaction
+      expr: |
+        pg_stat_activity_max_tx_duration{state="active"} > 300
+      for: 5m
+      labels:
+        severity: high
+        component: database
+      annotations:
+        summary: "Long-running transaction detected on PostgreSQL {{ $labels.instance }} ({{ $value | printf \"%.0f\" }}s)"
+        description: |
+          A transaction on PostgreSQL {{ $labels.instance }} has been running for {{ $value | printf "%.0f" }} seconds.
+          Long-running transactions can cause lock contention and performance issues.
+          ACTION: Identify and investigate the long-running query:
+          'SELECT pid, now() - pg_stat_activity.query_start AS duration, query FROM pg_stat_activity WHERE state = ''active'' AND now() - pg_stat_activity.query_start > interval ''5 minutes'';'
+
+    - alert: PostgreSQLDeadlocks
+      expr: |
+        rate(pg_stat_database_deadlocks{datname!~"template.*|postgres"}[5m]) > 0
+      for: 5m
+      labels:
+        severity: warning
+        component: database
+      annotations:
+        summary: "PostgreSQL deadlocks detected on {{ $labels.instance }} ({{ $value | printf \"%.2f\" }}/s)"
+        description: |
+          PostgreSQL database {{ $labels.datname }} on {{ $labels.instance }} is experiencing deadlocks.
+          Deadlock rate: {{ $value | printf "%.2f" }}/s
+          ACTION: Review application transaction logic, check for concurrent updates to same rows,
+          consider adjusting transaction isolation levels.
+
+    - alert: PostgreSQLHighRollbackRate
+      expr: |
+        (
+          rate(pg_stat_database_xact_rollback{datname!~"template.*|postgres"}[5m]) / 
+          (rate(pg_stat_database_xact_commit{datname!~"template.*|postgres"}[5m]) + 
+           rate(pg_stat_database_xact_rollback{datname!~"template.*|postgres"}[5m]))
+        ) * 100 > 10
+      for: 10m
+      labels:
+        severity: warning
+        component: database
+      annotations:
+        summary: "High rollback rate on PostgreSQL {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}%)"
+        description: |
+          PostgreSQL database {{ $labels.datname }} on {{ $labels.instance }} has a rollback rate of {{ $value | printf "%.1f" }}%.
+          High rollback rates indicate application errors or transaction conflicts.
+          ACTION: Review application error logs, check for constraint violations, review transaction logic.
+
+    # ============================================================================
+    # IN-POD POSTGRESQL ALERTS (in-cluster PostgreSQL instances)
+    # These are PostgreSQL pods running inside the Kubernetes cluster
+    # ============================================================================
+    - alert: PostgreSQLPodDown
+      expr: |
+        kube_deployment_status_available_replicas{
+          namespace="prod",
+          deployment=~".*postgresql.*|.*postgres.*"
+        } == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: database
+      annotations:
+        summary: "PostgreSQL deployment has no available replicas in prod namespace"
+        description: |
+          PostgreSQL deployment {{ $labels.deployment }} in prod namespace has 0 available pods.
+          This alert is for in-cluster PostgreSQL instances (not external DB at 172.16.16.229).
+          ACTION REQUIRED: Check PostgreSQL pod status: 'kubectl get pods -n prod -l app=postgresql'
+          Check logs: 'kubectl logs -n prod -l app=postgresql'
+
+    - alert: PostgreSQLPodHighRestarts
+      expr: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="prod",
+          pod=~".*postgresql.*|.*postgres.*"
+        }[1h]) > 3
+      for: 5m
+      labels:
+        severity: critical
+        component: database
+      annotations:
+        summary: "PostgreSQL pods have restarted {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          PostgreSQL pods in prod namespace have restarted {{ $value | printf "%.0f" }} times in the last hour.
+          High restart rate indicates database corruption, disk issues, or memory problems.
+          ACTION REQUIRED: Check PostgreSQL logs: 'kubectl logs -n prod -l app=postgresql'
+          Check PVC disk usage and database health.
+
+    # ============================================================================
+    # DATABASE DISK ALERTS (already covered in infrastructure-alerts.yaml but
+    # included here with database-specific context and remediation steps)
+    # ============================================================================
+    # Note: These alerts are also in infrastructure-alerts.yaml with instance matching
+    # This serves as a reminder that DB disk alerts are critical

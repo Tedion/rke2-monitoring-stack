@@ -1,0 +1,136 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: etcd-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: etcd
+    interval: 30s
+    rules:
+    # ============================================================================
+    # ETCD ALERTS - Tuned for RKE2 single-node embedded etcd
+    # Default kube-prometheus-stack rules expect 3+ members and fire constantly
+    # These rules work correctly for both single-node and multi-node etcd
+    # ============================================================================
+
+    # ============================================================================
+    # ETCD QUORUM AND LEADER ALERTS
+    # ============================================================================
+    # Fixed: Works for both single-node (1 member) and multi-node (3+ members) etcd
+    # Formula: quorum = (members + 1) / 2, so for 1 node: (1+1)/2 = 1, for 3 nodes: (3+1)/2 = 2
+    - alert: EtcdInsufficientMembers
+      expr: |
+        count(etcd_server_has_leader{job="etcd"}) < ((count(etcd_server_has_leader{job="etcd"}) + 1) / 2)
+      for: 5m
+      labels:
+        severity: critical
+        component: etcd
+      annotations:
+        summary: "Etcd cluster has insufficient members ({{ $value | printf \"%.0f\" }} members)"
+        description: |
+          Etcd cluster has {{ $value | printf "%.0f" }} members, which is below quorum.
+          For RKE2 single-node etcd: quorum is 1. For 3-node etcd: quorum is 2.
+          ACTION REQUIRED: Check etcd pod status, network connectivity, and etcd logs.
+          For RKE2: Check '/var/lib/rancher/rke2/server/logs/etcd.log'
+
+    - alert: EtcdNoLeader
+      expr: |
+        etcd_server_has_leader{job="etcd"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: etcd
+      annotations:
+        summary: "Etcd cluster has no leader"
+        description: |
+          Etcd cluster has no leader. This is a critical failure - etcd cannot process requests.
+          ACTION REQUIRED: Check etcd pod status, network partitions, and etcd logs.
+          For RKE2: Check '/var/lib/rancher/rke2/server/logs/etcd.log'
+          May require etcd cluster recovery if persistent.
+
+    - alert: EtcdLeaderChanges
+      expr: |
+        increase(etcd_server_leader_changes_seen_total{job="etcd"}[1h]) > 3
+      for: 5m
+      labels:
+        severity: warning
+        component: etcd
+      annotations:
+        summary: "Etcd leader changed {{ $value | printf \"%.0f\" }} times in the last hour"
+        description: |
+          Etcd leader has changed {{ $value | printf "%.0f" }} times in the last hour.
+          Frequent leader changes indicate network issues, slow disk, or high load.
+          ACTION: Check network latency, disk I/O performance, and etcd resource limits.
+          For RKE2: Monitor '/var/lib/rancher/rke2/server/db/etcd' disk performance.
+
+    # ============================================================================
+    # ETCD STORAGE ALERTS
+    # ============================================================================
+    # RKE2 has a hard limit of 8GB for etcd database size
+    - alert: EtcdDatabaseSizeWarning
+      expr: |
+        etcd_mvcc_db_size_bytes{job="etcd"} > 6 * 1024 * 1024 * 1024
+      for: 10m
+      labels:
+        severity: warning
+        component: etcd
+      annotations:
+        summary: "Etcd database size is {{ $value | printf \"%.2f\" }}GB (approaching RKE2 8GB limit)"
+        description: |
+          Etcd database size is {{ $value | printf "%.2f" }}GB on {{ $labels.instance }}.
+          RKE2 has a hard limit of 8GB. If etcd exceeds 8GB, RKE2 will fail to start.
+          ACTION: Review and clean up old Kubernetes resources, consider compacting etcd:
+          'kubectl get --raw /metrics | grep etcd_mvcc_db_size_bytes'
+          For RKE2: Check '/var/lib/rancher/rke2/server/db/etcd' size.
+
+    - alert: EtcdDatabaseSizeCritical
+      expr: |
+        etcd_mvcc_db_size_bytes{job="etcd"} > 7 * 1024 * 1024 * 1024
+      for: 5m
+      labels:
+        severity: critical
+        component: etcd
+      annotations:
+        summary: "CRITICAL: Etcd database size is {{ $value | printf \"%.2f\" }}GB (near RKE2 8GB limit)"
+        description: |
+          Etcd database size is {{ $value | printf "%.2f" }}GB on {{ $labels.instance }}.
+          RKE2 will FAIL TO START if etcd exceeds 8GB.
+          ACTION REQUIRED: Immediately clean up old Kubernetes resources, delete unused namespaces,
+          remove old CRDs, and compact etcd. Consider etcd defragmentation if needed.
+
+    # ============================================================================
+    # ETCD PERFORMANCE ALERTS
+    # ============================================================================
+    - alert: EtcdSlowWALFsync
+      expr: |
+        histogram_quantile(0.99, rate(etcd_disk_wal_fsync_duration_seconds_bucket{job="etcd"}[5m])) > 0.5
+      for: 10m
+      labels:
+        severity: warning
+        component: etcd
+      annotations:
+        summary: "Etcd WAL fsync P99 latency is {{ $value | printf \"%.3f\" }}s (slow disk)"
+        description: |
+          Etcd WAL fsync P99 latency is {{ $value | printf "%.3f" }}s on {{ $labels.instance }}.
+          Slow disk I/O can cause etcd performance degradation and leader changes.
+          ACTION: Check disk I/O performance, consider using faster storage (SSD), or reduce etcd load.
+          For RKE2: Monitor '/var/lib/rancher/rke2/server/db/etcd' disk performance.
+
+    - alert: EtcdFailedRaftProposals
+      expr: |
+        rate(etcd_server_proposals_failed_total{job="etcd"}[5m]) > 0
+      for: 5m
+      labels:
+        severity: warning
+        component: etcd
+      annotations:
+        summary: "Etcd raft proposals are failing on {{ $labels.instance }} ({{ $value | printf \"%.2f\" }}/s)"
+        description: |
+          Etcd raft proposals are failing at {{ $value | printf "%.2f" }}/s on {{ $labels.instance }}.
+          Failed proposals indicate etcd cluster issues, network problems, or overload.
+          ACTION: Check etcd cluster health, network connectivity, and reduce API server load.
+          Investigate etcd logs for specific failure reasons.

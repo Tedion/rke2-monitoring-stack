@@ -1,0 +1,146 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: application-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: application
+    interval: 30s
+    rules:
+    # ============================================================================
+    # BLACKBOX HTTP PROBES - Symptom-based alerting (Google SRE philosophy)
+    # Alert on symptoms (can users reach the service?) not causes
+    # ============================================================================
+    - alert: EndpointDown
+      expr: |
+        probe_success{job="blackbox-http"} == 0
+      for: 3m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "HTTP endpoint {{ $labels.instance }} is DOWN"
+        description: |
+          HTTP endpoint {{ $labels.instance }} has been unreachable for 3 minutes.
+          This is a symptom-based alert - users cannot access the service.
+          ACTION REQUIRED: Check application pod status, ingress configuration, network connectivity.
+          Verify endpoint manually: 'curl -v {{ $labels.instance }}'
+
+    - alert: EndpointSlow
+      expr: |
+        probe_http_duration_seconds{job="blackbox-http"} > 5
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "HTTP endpoint {{ $labels.instance }} is slow ({{ $value | printf \"%.2f\" }}s)"
+        description: |
+          HTTP endpoint {{ $labels.instance }} response time is {{ $value | printf "%.2f" }}s, exceeding 5s threshold.
+          Slow response times degrade user experience.
+          ACTION: Investigate application performance, database queries, external API calls, or resource constraints.
+
+    - alert: SSLCertExpiringSoon
+      expr: |
+        (probe_ssl_earliest_cert_expiry{job="blackbox-http"} - time()) / 86400 < 30
+      for: 1h
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "SSL certificate for {{ $labels.instance }} expires in {{ $value | printf \"%.0f\" }} days"
+        description: |
+          SSL certificate for {{ $labels.instance }} expires in {{ $value | printf "%.0f" }} days.
+          ACTION: Renew SSL certificate before expiration to avoid service disruption.
+
+    - alert: SSLCertExpiringCritical
+      expr: |
+        (probe_ssl_earliest_cert_expiry{job="blackbox-http"} - time()) / 86400 < 7
+      for: 1h
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "CRITICAL: SSL certificate for {{ $labels.instance }} expires in {{ $value | printf \"%.0f\" }} days"
+        description: |
+          SSL certificate for {{ $labels.instance }} expires in {{ $value | printf "%.0f" }} days.
+          ACTION REQUIRED: Renew SSL certificate IMMEDIATELY to avoid service disruption.
+
+    # ============================================================================
+    # ISTIO SERVICE MESH ALERTS (OpenG2P uses Istio)
+    # ============================================================================
+    - alert: IstioHighErrorRate
+      expr: |
+        (
+          sum(rate(istio_requests_total{response_code=~"5.."}[5m])) by (destination_service, destination_service_namespace) /
+          sum(rate(istio_requests_total[5m])) by (destination_service, destination_service_namespace)
+        ) * 100 > 5
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "High 5xx error rate for service {{ $labels.destination_service }} in namespace {{ $labels.destination_service_namespace }} ({{ $value | printf \"%.1f\" }}%)"
+        description: |
+          Service {{ $labels.destination_service }} in namespace {{ $labels.destination_service_namespace }}
+          has a 5xx error rate of {{ $value | printf "%.1f" }}%.
+          ACTION: Check application logs, database connectivity, external dependencies, and pod status.
+          Review Istio metrics: 'kubectl exec -it <istio-proxy> -c istio-proxy -- pilot-agent request GET stats'
+
+    - alert: IstioHighLatency
+      expr: |
+        histogram_quantile(0.99,
+          sum(rate(istio_request_duration_milliseconds_bucket[5m])) by (le, destination_service, destination_service_namespace)
+        ) > 5000
+      for: 5m
+      labels:
+        severity: high
+        component: application
+      annotations:
+        summary: "High P99 latency for service {{ $labels.destination_service }} in namespace {{ $labels.destination_service_namespace }} ({{ $value | printf \"%.0f\" }}ms)"
+        description: |
+          Service {{ $labels.destination_service }} in namespace {{ $labels.destination_service_namespace }}
+          has a P99 latency of {{ $value | printf "%.0f" }}ms, exceeding 5000ms threshold.
+          ACTION: Investigate slow database queries, external API calls, or resource constraints.
+          Review Istio metrics and application performance.
+
+    # ============================================================================
+    # CONTROL PLANE ALERTS
+    # ============================================================================
+    - alert: APIServerHighLatency
+      expr: |
+        histogram_quantile(0.99,
+          sum(rate(apiserver_request_duration_seconds_bucket{verb!="WATCH"}[5m])) by (le, verb)
+        ) > 3
+      for: 10m
+      labels:
+        severity: warning
+        component: control-plane
+      annotations:
+        summary: "API server P99 latency is {{ $value | printf \"%.2f\" }}s for verb {{ $labels.verb }}"
+        description: |
+          Kubernetes API server P99 latency is {{ $value | printf "%.2f" }}s for verb {{ $labels.verb }},
+          exceeding 3s threshold (non-WATCH requests).
+          ACTION: Check etcd performance, API server resource limits, and reduce API request load.
+
+    - alert: APIServerHighErrorRate
+      expr: |
+        (
+          sum(rate(apiserver_request_total{code=~"5.."}[5m])) /
+          sum(rate(apiserver_request_total[5m]))
+        ) * 100 > 3
+      for: 5m
+      labels:
+        severity: high
+        component: control-plane
+      annotations:
+        summary: "API server 5xx error rate is {{ $value | printf \"%.1f\" }}%"
+        description: |
+          Kubernetes API server has a 5xx error rate of {{ $value | printf "%.1f" }}%.
+          High API server errors indicate control plane issues.
+          ACTION REQUIRED: Check API server logs, etcd health, and control plane resource limits.
+          Review: 'kubectl get --raw /metrics | grep apiserver_request_total'
